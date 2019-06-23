@@ -1,0 +1,692 @@
+package berkeleyentity.prunedomain
+
+import scala.collection.JavaConverters._
+import berkeleyentity.joint.JointDocACE
+import berkeleyentity.ner.MCNerFeaturizer
+import berkeleyentity.wiki.Query
+import berkeleyentity.wiki.WikipediaInterface
+import scala.collection.mutable.ArrayBuffer
+import berkeleyentity.sem.BrownClusterInterface
+import berkeleyentity.oregonstate.tmpExample
+import berkeleyentity.coref.MentionPropertyComputer
+import berkeleyentity.coref.NumberGenderComputer
+import java.io.PrintWriter
+import berkeleyentity.oregonstate.NerErrorFinder
+import berkeleyentity.lang.Language
+import berkeleyentity.ConllDocReader
+import berkeleyentity.coref.CorefDocAssembler
+import edu.berkeley.nlp.util.Logger
+import berkeleyentity.ranking.UMassRankLib
+import berkeleyentity.Driver
+import berkeleyentity.coref.CorefDoc
+import berkeleyentity.oregonstate.NerTesting
+import edu.berkeley.nlp.futile.fig.basic.Indexer
+import berkeleyentity.ner.MCNerExample
+import berkeleyentity.oregonstate.NerDecision
+import scala.collection.mutable.HashMap
+import ciir.umass.edu.learning.SparseDataPoint
+import ciir.umass.edu.learning.DataPoint
+import util.control.Breaks._
+
+// for synthetic pruner only
+class WeightedIndex(val index: Int,
+                    val weight: Double) {
+  
+}
+
+class FactoryGraphPrunerACE(val doc: JointDocACE,
+                            val wikiDB: Option[WikipediaInterface],
+                            val model: GraphPrunerModelACE,
+                            val gold: Boolean,
+                            val training: Boolean) {
+
+  //val alpha: Double = 0.25;
+  val docGraph = doc.docGraph;
+ 
+  // indicator of decision pruning (1 means pruning)
+  val corefPruneIndicator = new Array[Int](docGraph.size());
+  val nerPruneIndicator = new Array[Int](docGraph.size());
+  val wikiPruneIndicator = new Array[Int](docGraph.size());
+    
+  val corefDomain = new Array[Array[Int]](docGraph.size());
+  val nerDomain = new Array[Array[String]](docGraph.size());
+  //val queryDomain = new Array[Array[Query]](docGraph.size());
+  val wikiDomain = new Array[Array[String]](docGraph.size());
+  
+  def initIndicators() {
+    for (i <- 0 until docGraph.size) {
+      // coref
+      corefPruneIndicator(i) = 0;
+      // ner
+      nerPruneIndicator(i) = 0;
+      // wiki
+      wikiPruneIndicator(i) = 0;
+    }
+  }
+  
+  
+ def noDomainPruning() {
+    initIndicators();
+    for (i <- 0 until docGraph.size) {
+      // coref
+      val cDomnArr =  docGraph.getPrunedDomain(i, gold);
+      corefDomain(i) = cDomnArr;
+      // ner
+      val nDomnArr = MCNerFeaturizer.StdLabelIndexer.getObjects.asScala.toArray;
+      nerDomain(i) = nDomnArr;
+      // wiki
+    }
+    println("Doesn't run domain pruning at all ...");
+  }
+  
+/*
+  def doSyntheticDomainPruning() {
+    initIndicators();
+	  val r = scala.util.Random;
+
+	  val corefIdxs = new ArrayBuffer[WeightedIndex];
+	  val nerIdxs = new ArrayBuffer[WeightedIndex];
+	  for (i <- 0 until docGraph.size) {
+		  corefIdxs += (new WeightedIndex(i, r.nextDouble));
+		  nerIdxs += (new WeightedIndex(i, r.nextDouble));
+	  }
+
+	  val sortCorefIdxs = (corefIdxs.toSeq.sortWith(_.weight > _.weight)).toArray;
+	  val sortNerIdxs = (nerIdxs.toSeq.sortWith(_.weight > _.weight)).toArray;
+
+    var nerPrunCnt = 0;
+	  val remained = (alpha * docGraph.size).toInt;
+	  for (j <- 0 until remained) {
+      //corefPruneIndicator(sortCorefIdxs(j).index) = 1;
+      nerPruneIndicator(sortNerIdxs(j).index) = 1;
+      nerPrunCnt += 1;
+	  }
+    println("Ner prune count = " + nerPrunCnt + "/" + sortNerIdxs.length);
+    
+	  for (i <- 0 until docGraph.size) {
+		  // coref
+      val cDomnArr =  if (corefPruneIndicator(i) > 0) {
+        val crrArr = docGraph.getPrunedDomain(i, true);
+        Array(crrArr(0));
+      } else {
+        docGraph.getPrunedDomain(i, gold);
+      }
+		  corefDomain(i) = cDomnArr;
+		  // ner
+		  val nDomnArr = if (nerPruneIndicator(i) > 0) {
+        model.nerModel.printLog(i + " " + doc.getGoldLabel(docGraph.getMention(i)));
+        Array(doc.getGoldLabel(docGraph.getMention(i)));
+      } else {
+        MCNerFeaturizer.StdLabelIndexer.getObjects.asScala.toArray;
+      }
+		  nerDomain(i) = nDomnArr;
+		  // wiki
+	  }
+        
+	  println("Runing synthetic domain pruning ...");
+  }
+*/ 
+  
+  def doSyntheticDomainPruning() {
+    // coref
+    doCorefDomainPruning();
+    // Ner
+    doSyntheticNerPruning()
+    
+    println("Runing synthetic domain pruning ...");
+  }
+ 
+  def doSyntheticNerPruning() {
+
+    model.nerModel.printLog("=="+docGraph.corefDoc.rawDoc.docID+"==");
+    val thres =  model.nerModel.threshold;
+    
+    val defaultQid = 1;
+    val corefDoc = docGraph.corefDoc;
+    val rawDoc = corefDoc.rawDoc;
+    val nerModel = model.nerModel;
+    
+    val nerVariableDecisions = new Array[NerDecision](docGraph.size);
+
+    // run initializer
+    for (i <- 0 until docGraph.size) {
+      val pm = corefDoc.predMentions(i);
+      val nerExmp = new MCNerExample(rawDoc.words(pm.sentIdx), rawDoc.pos(pm.sentIdx), rawDoc.trees(pm.sentIdx), pm.startIdx, pm.headIdx, pm.endIdx, pm.nerString);
+      //nerExmp.docID = dCnt;
+      
+      val featEachLabel = nerModel.nerFeaturizer.featurize(nerExmp, false);
+      val goldLabelIdx = MCNerFeaturizer.StdLabelIndexer.indexOf(NerTesting.getGoldNerTag(nerExmp.goldLabel));
+      var bestLbl = -1;
+      var bestScore = -Double.MaxValue;
+      for (l <- 0 until 7) {
+        val score = NerTesting.computeScore(nerModel.nerInitWeight, featEachLabel(l));
+        if (score > bestScore) {
+          bestScore = score;
+          bestLbl = l;
+        }
+      }
+
+      // construct decision
+      val thisTmp = new tmpExample(nerExmp, featEachLabel);
+      val dc = (new NerDecision(thisTmp, defaultQid, i,  bestLbl, bestScore, (goldLabelIdx == bestLbl)));
+      dc.features = featEachLabel(bestLbl);
+      nerVariableDecisions(i) = dc;
+    }
+    
+    // rank all decisions
+    var pruneCnt = 0;
+    for (i <- 0 until docGraph.size) {
+      val v = nerVariableDecisions(i);
+      val featStr = NerErrorFinder.getNerDecisionFeatureStr(defaultQid, v.features, v.isCorrect);
+      val rankSample = (new SparseDataPoint(featStr));
+      v.rankScore = nerModel.nerRanker.getRankerScore(rankSample.asInstanceOf[DataPoint]);
+      v.ex.needRelearn = false;
+      
+      if (v.rankScore >= thres) {
+    	  if (v.isCorrect) { // synthetic here!
+    		  v.ex.needRelearn = true;
+    		  nerPruneIndicator(i) = 1;
+    		  pruneCnt += 1;
+    	  }
+      }
+    }
+
+    println("Ner prune count = " + pruneCnt + "/" + nerVariableDecisions.length);
+    
+    
+    // pruning the "correct-initial" decisions
+    var crrPrune = 0;
+    var allPrune = 0;
+    for (i <- 0 until docGraph.size) {
+      // ner
+      val nDomnArr = if (nerPruneIndicator(i) > 0) {
+        model.nerModel.printLog(i + " " + doc.getGoldLabel(docGraph.getMention(i)));
+        allPrune += 1;
+        if (nerVariableDecisions(i).isCorrect) {
+          crrPrune += 1;
+        }
+        if (training) {
+          Array(doc.getGoldLabel(docGraph.getMention(i)));
+        } else {
+          Array(MCNerFeaturizer.StdLabelIndexer.getObject(nerVariableDecisions(i).valId));
+        }
+      } else {
+        MCNerFeaturizer.StdLabelIndexer.getObjects.asScala.toArray;
+      }
+      nerDomain(i) = nDomnArr;
+    }
+    println("Correct prune rate = " + crrPrune + "/" + allPrune);
+  }
+  
+  
+  def doDomainPruning() {
+    // coref
+    doCorefDomainPruning();
+    // ner
+    doNerDomainPruning(); 
+    // wiki
+    
+    println("Runing really domain pruning ...");
+  }
+  
+  //// pruning for each tasks
+/*
+  def doNerDomainPruning() {
+    
+    model.nerModel.printLog("=="+docGraph.corefDoc.rawDoc.docID+"==");
+    
+    val defaultQid = 1;
+    val corefDoc = docGraph.corefDoc;
+    val rawDoc = corefDoc.rawDoc;
+    val nerModel = model.nerModel;
+    
+    val nerVariableDecisions = new Array[NerDecision](docGraph.size);
+
+    // run initializer
+    for (i <- 0 until docGraph.size) {
+      val pm = corefDoc.predMentions(i);
+      val nerExmp = new MCNerExample(rawDoc.words(pm.sentIdx), rawDoc.pos(pm.sentIdx), rawDoc.trees(pm.sentIdx), pm.startIdx, pm.headIdx, pm.endIdx, pm.nerString);
+      //nerExmp.docID = dCnt;
+      
+      val featEachLabel = nerModel.nerFeaturizer.featurize(nerExmp, false);
+      val goldLabelIdx = MCNerFeaturizer.StdLabelIndexer.indexOf(NerTesting.getGoldNerTag(nerExmp.goldLabel));
+      var bestLbl = -1;
+      var bestScore = -Double.MaxValue;
+      for (l <- 0 until 7) {
+        val score = NerTesting.computeScore(nerModel.nerInitWeight, featEachLabel(l));
+        if (score > bestScore) {
+          bestScore = score;
+          bestLbl = l;
+        }
+      }
+      //total += 1;
+      //if (goldLabelIdx == bestLbl) {
+        //correct += 1
+        //docCrr += 1
+        //testEx.isCorrect = true;
+      //} else {
+      //  testEx.isCorrect = false;
+      //}
+      
+      // construct decision
+      val thisTmp = new tmpExample(nerExmp, featEachLabel);
+      val dc = (new NerDecision(thisTmp, defaultQid, i,  bestLbl, bestScore, (goldLabelIdx == bestLbl)));
+      dc.features = featEachLabel(bestLbl);
+      nerVariableDecisions(i) = dc;
+      
+      
+    }
+    
+    // rank all decisions
+    for (v <- nerVariableDecisions) {
+    	val featStr = NerErrorFinder.getNerDecisionFeatureStr(defaultQid, v.features, v.isCorrect);
+    	val rankSample = (new SparseDataPoint(featStr));
+    	v.rankScore = nerModel.nerRanker.getRankerScore(rankSample.asInstanceOf[DataPoint]);
+      v.ex.needRelearn = false;
+    }
+    var cutoff = (nerVariableDecisions.size * 0.75).toInt;//40;
+    val sorted = (nerVariableDecisions.toSeq.sortWith(_.rankScore > _.rankScore)).toArray;
+    if (sorted.length < cutoff) cutoff = sorted.length;
+    for (j <- 0 until cutoff) {
+    	sorted(j).ex.needRelearn = true;
+    	//if (!sorted(i).isCorrect) {
+    	//  wngCnt += 1;
+    	//}
+    	//total += 1;
+    }
+    
+    // turn "needRelearn" to "PruneIndicator" 
+    var pruneCnt = 0;
+    for (j <- 0 until sorted.length) {
+      if ((sorted(j).ex.needRelearn) == false) { // find the mentions that are not need to re-learn
+        val idx = sorted(j).menId;
+        nerPruneIndicator(idx) = 1;
+        pruneCnt += 1;
+      }
+    }
+    println("Ner prune count = " + pruneCnt + "/" + sorted.length);
+    
+    
+    // pruning the "correct-initial" decisions
+    var crrPrune = 0;
+    var allPrune = 0;
+    for (i <- 0 until docGraph.size) {
+      // ner
+      val nDomnArr = if (nerPruneIndicator(i) > 0) {
+        model.nerModel.printLog(i + " " + doc.getGoldLabel(docGraph.getMention(i)));
+        allPrune += 1;
+        if (nerVariableDecisions(i).isCorrect) {
+          crrPrune += 1;
+        }
+        if (training) {
+          Array(doc.getGoldLabel(docGraph.getMention(i)));
+        } else {
+          Array(MCNerFeaturizer.StdLabelIndexer.getObject(nerVariableDecisions(i).valId));
+        }
+      } else {
+        MCNerFeaturizer.StdLabelIndexer.getObjects.asScala.toArray;
+      }
+      nerDomain(i) = nDomnArr;
+    }
+    println("Correct prune rate = " + crrPrune + "/" + allPrune);
+  }
+*/  
+
+  def doNerDomainPruning() {
+
+    var topk = 4;
+    val thres =  model.nerModel.threshold;
+    model.nerModel.printLog("=="+docGraph.corefDoc.rawDoc.docID+"==" + "thres = " + thres);
+
+    
+    val defaultQid = 1;
+    val corefDoc = docGraph.corefDoc;
+    val rawDoc = corefDoc.rawDoc;
+    val nerModel = model.nerModel;
+   
+    var crrPrune = 0;
+    var allPrune = 0;
+    for (i <- 0 until docGraph.size) {
+      val pm = corefDoc.predMentions(i);
+      val nerExmp = new MCNerExample(rawDoc.words(pm.sentIdx), rawDoc.pos(pm.sentIdx), rawDoc.trees(pm.sentIdx), pm.startIdx, pm.headIdx, pm.endIdx, pm.nerString);
+
+      //nerExmp.docID = dCnt;
+      
+      val featEachLabel = nerModel.nerFeaturizer.featurize(nerExmp, false);
+      val goldLabelIdx = MCNerFeaturizer.StdLabelIndexer.indexOf(NerTesting.getGoldNerTag(nerExmp.goldLabel));
+      var bestLbl = -1;
+      var bestScore = -Double.MaxValue;
+      
+      val thisTmp = new tmpExample(nerExmp, featEachLabel);
+      val decisions = new ArrayBuffer[NerDecision]();
+      for (l <- 0 until 7) {
+        val score = NerTesting.computeScore(nerModel.nerInitWeight, featEachLabel(l));
+        
+        val dc = (new NerDecision(thisTmp, defaultQid, i, l, score, (goldLabelIdx == l)));
+        dc.features = featEachLabel(l);
+        decisions += dc;
+        
+        if (score > bestScore) {
+          bestScore = score;
+          bestLbl = l;
+        }
+      }
+      
+      val sorted = (decisions.toSeq.sortWith(_.score > _.score)).toArray;
+      
+      /////////////////////////////////////////////
+      var containCrr = false;
+      var crrIdx = -999;
+      val domainArrBuf = new ArrayBuffer[String]();
+      breakable {
+       for (j <- 0 until topk) { // }sorted.size) {
+         if (sorted(j).score >= thres) {
+           domainArrBuf += (MCNerFeaturizer.StdLabelIndexer.getObject(sorted(j).valId));
+           if (sorted(j).isCorrect)  {
+             containCrr = true; 
+             crrIdx = j;
+             //break;
+           }
+         }
+         if (j == (crrIdx + 1)) {
+           break;
+         }
+       }
+      }
+      nerDomain(i) = domainArrBuf.toArray;
+    
+      //////////////
+      allPrune += 1;
+      if (containCrr) crrPrune += 1; 
+    }
+    
+    
+    println("Contain correct rate = " + crrPrune + "/" + allPrune);
+  }
+  
+  ///// Coref
+  def doCorefDomainPruning() {
+    // no pruning
+    for (i <- 0 until docGraph.size) {
+      // coref
+      val cDomnArr =  docGraph.getPrunedDomain(i, gold);
+      corefDomain(i) = cDomnArr;
+    }
+  }
+  
+  ///// Wiki
+  
+  
+  //////
+ 
+  
+  //// getters
+  
+  def getCorefDomain(mentionIdx: Int, useGold: Boolean) = {
+    corefDomain(mentionIdx);
+  }
+  
+  def getNerDomain(mentionIdx: Int, useGold: Boolean) = {
+    nerDomain(mentionIdx);
+  }
+  
+  def getWikiDomain(mentionIdx: Int, useGold: Boolean, originalWikiDomain: Seq[String]) = {
+    val prunedWikiDomain = new ArrayBuffer[String]();
+    prunedWikiDomain ++= originalWikiDomain;
+    prunedWikiDomain.toSeq;
+  }
+
+}
+
+
+
+class GraphPrunerModelACE(val nerModel: NerPrunerModelACE) {
+  
+
+  
+  
+ 
+  
+}
+
+class NerPrunerModelACE(//val nerFeatIndexer: Indexer[String],
+                        val nerFeaturizer: MCNerFeaturizer,
+                        val nerInitWeight: Array[Double],
+                        val nerRanker: UMassRankLib) {
+  
+  //val threshold = -0.09666471183300018; // 0.35 larger than threshold decision will be pruned
+  //val threshold = -0.06927698850631714; // 0.25
+  val threshold = -1.7439992031; // -0.12655694782733917; // 0.50
+  
+  val logWriter = new PrintWriter("NerPruning.log");
+  def printLog(lineStr: String) {
+    logWriter.println(lineStr);
+    logWriter.flush();
+  }
+  
+  def extractDocExamples(corefDoc: CorefDoc) = {
+	  val exs = new ArrayBuffer[MCNerExample];
+	  var dCnt = 0;
+	  val rawDoc = corefDoc.rawDoc;
+	  val docName = rawDoc.docID
+		for (i <- 0 until corefDoc.predMentions.size) {
+			val pm = corefDoc.predMentions(i);
+			val nerExmp = new MCNerExample(rawDoc.words(pm.sentIdx), rawDoc.pos(pm.sentIdx), rawDoc.trees(pm.sentIdx), pm.startIdx, pm.headIdx, pm.endIdx, pm.nerString);
+			nerExmp.docID = dCnt;
+			exs += nerExmp;
+		}
+	  exs;
+  }
+  
+  def computeUpperBoundWithErrFinder(testExs: ArrayBuffer[tmpExample], 
+                                     weight: Array[Double],
+                                     rankerModel: UMassRankLib,
+                                     trueErrs: Boolean) = {
+    
+    val varialbeDecis = new ArrayBuffer[NerDecision]();
+    
+    var qid: Int = 0;
+    var mid: Int = 0;
+    var total: Double = 0;
+    var correct: Double = 0;
+    var docCrr: Int = 0;
+    for (testEx <- testExs) {
+      qid  = testEx.exmp.docID;
+      mid += 1;
+      val featEachLabel = testEx.feats;
+      val goldLabelIdx = MCNerFeaturizer.StdLabelIndexer.indexOf(NerTesting.getGoldNerTag(testEx.exmp.goldLabel));
+      var bestLbl = -1;
+      var bestScore = -Double.MaxValue;
+      for (l <- 0 until 7) {
+        val score = NerTesting.computeScore(weight, featEachLabel(l));
+        if (score > bestScore) {
+          bestScore = score;
+          bestLbl = l;
+        }
+      }
+      total += 1;
+      if (goldLabelIdx == bestLbl) {
+        correct += 1
+        docCrr += 1
+        testEx.isCorrect = true;
+      } else {
+        testEx.isCorrect = false;
+      }
+      
+      // construct decision
+      val dc = (new NerDecision(testEx, qid, (mid - 1),  bestLbl, bestScore, (goldLabelIdx == bestLbl)));
+      dc.features = featEachLabel(bestLbl);
+      varialbeDecis += dc;
+    }
+    
+    //
+    val relearnExs = if (trueErrs) {
+      testExs.filter { x => (x.isCorrect == false) };
+    } else {
+      rankDecisionByDoc(varialbeDecis, rankerModel);
+      testExs.filter { x => (x.needRelearn == true) };
+    }
+    println("Relearn example count: " + relearnExs.size);
+    
+    relearnExs;
+  }
+  
+  def rankDecisionByDoc(testExs: ArrayBuffer[NerDecision], ranker: UMassRankLib) {
+    
+    //val ranker = new UMassRankLib();
+    //ranker.loadModelFile(rankerPath);
+    
+    // split by document
+    val docExMap = new HashMap[Int, ArrayBuffer[NerDecision]]();
+    for (testEx <- testExs) {
+      val dname = testEx.docId;
+      if (docExMap.contains(dname)) {
+        docExMap(dname) += testEx;
+      } else {
+        val newArr = new ArrayBuffer[NerDecision]();
+        newArr += testEx;
+        docExMap += (dname -> newArr);
+      }
+    }
+
+    // count by document
+    var wngCnt = 0;
+    var total = 0;
+    var mTotal = 0;
+    for ((k, vlist) <- docExMap) {
+      mTotal += vlist.length;
+      for (v <- vlist) {
+        val featStr = NerErrorFinder.getNerDecisionFeatureStr(k, v.features, v.isCorrect);
+        val rankSample = (new SparseDataPoint(featStr));
+        v.rankScore = ranker.getRankerScore(rankSample.asInstanceOf[DataPoint]);
+      }
+      var nmen = (vlist.size * 0.75).toInt;//40;
+      val sorted = (vlist.toSeq.sortWith(_.rankScore > _.rankScore)).toArray;
+      if (sorted.length < nmen) nmen = sorted.length;
+      for (i <- 0 until nmen) {
+        sorted(i).ex.needRelearn = true;
+        if (!sorted(i).isCorrect) {
+          wngCnt += 1;
+        }
+        total += 1;
+      }
+    }
+    
+    println("all rank error acc = " + wngCnt + " / " + total);
+    println("Total decisions = " + mTotal);
+  }
+  
+  
+}
+
+/////////////////////////////////////////
+/////////////////////////////////////////
+/////////////////////////////////////////
+
+//class GraphPrunerTrainer {
+//}
+
+object GraphPrunerTrainer {
+
+  
+    def trainPruner(numberGenderComputer: NumberGenderComputer,
+                    mentionPropertyComputer: MentionPropertyComputer,
+                    maybeBrownClusters: Option[Map[String, String]],
+                    trainPath: String,
+                    testPath: String) = {
+      
+    	val assembler = CorefDocAssembler(Language.ENGLISH, true); //use gold mentions
+    	val trainDocs = ConllDocReader.loadRawConllDocsWithSuffix(trainPath, -1, "", Language.ENGLISH);
+    	val trainCorefDocs = trainDocs.map(doc => assembler.createCorefDoc(doc, mentionPropertyComputer));
+
+    	val testDocs = ConllDocReader.loadRawConllDocsWithSuffix(testPath, -1, "", Language.ENGLISH);
+    	val testCorefDocs = testDocs.map(doc => assembler.createCorefDoc(doc, mentionPropertyComputer));
+
+      val md = trainPrunerGivenDocs(numberGenderComputer, mentionPropertyComputer, maybeBrownClusters,
+                                    trainCorefDocs, testCorefDocs);
+      md;
+    }
+  
+	def trainPrunerGivenDocs(numberGenderComputer: NumberGenderComputer,
+			mentionPropertyComputer: MentionPropertyComputer,
+			maybeBrownClusters: Option[Map[String, String]],
+			trainCorefDocs: Seq[CorefDoc],
+			testCorefDocs: Seq[CorefDoc]) = {
+			//devCorefDocs: Seq[CorefDoc]) = {
+
+    // ner initializer training
+    val nerMdl = trainNerPruner(numberGenderComputer, mentionPropertyComputer, maybeBrownClusters,
+                                trainCorefDocs, testCorefDocs);//trainCorefDocs, testCorefDocs, devCorefDocs);
+    
+    
+    val totalMdl = new GraphPrunerModelACE(nerMdl);
+    totalMdl;
+	}
+
+  def trainNerPruner(numberGenderComputer: NumberGenderComputer,
+                      mentionPropertyComputer: MentionPropertyComputer,
+                      maybeBrownClusters: Option[Map[String, String]],
+                      trainCorefDocs: Seq[CorefDoc],
+                      testCorefDocs: Seq[CorefDoc]) = {
+                      
+                      //devCorefDocs: Seq[CorefDoc]) = {
+
+    val trainDocs = trainCorefDocs.map { cdoc => cdoc.rawDoc };
+    val testDocs = testCorefDocs.map { cdoc => cdoc.rawDoc };
+    //val devDocs = devCorefDocs.map { cdoc => cdoc.rawDoc };
+
+    val trainExs = NerTesting.extractExamples(trainCorefDocs);
+    println("ACE NER chunks: " + trainExs.size);
+    
+    // Extract features
+    val featIndexer = new Indexer[String];
+    val nerFeaturizer = MCNerFeaturizer(Driver.nerFeatureSet.split("\\+").toSet, featIndexer, MCNerFeaturizer.StdLabelIndexer, trainDocs.flatMap(_.words), None, maybeBrownClusters);
+
+    
+    var allTrains = constructTmpExmp(trainExs, nerFeaturizer, true);
+    println("Ner feature size = " + nerFeaturizer.featureIndexer.size());
+    
+    /////////////// for testing & validating ///////////////
+    val testExs = NerTesting.extractExamples(testCorefDocs);
+    val testEmpExs = constructTmpExmp(testExs, nerFeaturizer, false);
+      
+    //val devExs = NerTesting.extractExamples(devCorefDocs);
+    //val devEmpExs = constructTmpExmp(devExs, nerFeaturizer, false);
+
+
+    
+    // learn!
+    val wght = NerTesting.structurePerceptrion(allTrains, featIndexer, testEmpExs, 100);
+    //val wght = multiClassSVM(allTrains, featIndexer, testEmpExs);
+    
+    // test error ranking
+    //val errRankModel = "errfinder/ner_error_ace05_lambdamart.txt";
+    //val errRankModel = "errfinder/ner_error_ace05_lambdamart_dev.txt";
+    //val errRankModel = "errfinder/ner_error_ace05_lambdamart_2.txt";
+    val errRankModel = "errfinder/ner_error_ace05_lambdamart_w0_global.txt";
+    val ranker = new UMassRankLib();
+    ranker.loadModelFile(errRankModel);
+    //val trainRelearnExs = NerErrorFinder.computeUpperBoundWithErrFinder(allTrains, wght, ranker, false);
+    //val testRelearnExs = NerErrorFinder.computeUpperBoundWithErrFinder(testEmpExs, wght, ranker, false);
+    //NerErrorFinder.computeUpperBoundGlobalFinder(allTrains, wght, ranker, false);
+    //NerErrorFinder.computeUpperBoundGlobalFinder(testEmpExs, wght, ranker, false);
+
+
+    Logger.logss("Ner Pruner Training Done !");
+
+    val nerModel = new NerPrunerModelACE(nerFeaturizer,  wght, ranker);
+    nerModel;
+  }
+  
+  def constructTmpExmp(mcExmps: ArrayBuffer[MCNerExample], 
+                       nerFeaturizer: MCNerFeaturizer,
+                       addToIdxer: Boolean) = {
+    var tmpExs = new ArrayBuffer[tmpExample]();
+    for (ex <- mcExmps) {
+      val featEachLabel = nerFeaturizer.featurize(ex, addToIdxer);
+      val thisTmp = new tmpExample(ex, featEachLabel);
+      tmpExs += (thisTmp); // add to list
+    }
+    tmpExs;
+  }
+}

@@ -1,0 +1,548 @@
+package berkeleyentity.mentions
+
+import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.HashMap
+
+import berkeleyentity.Driver
+import berkeleyentity.EntitySystem
+import berkeleyentity.GUtil
+import berkeleyentity.MyTimeCounter
+import berkeleyentity.coref.CorefEvaluator
+import berkeleyentity.coref.CorefFeaturizerTrainer
+import berkeleyentity.coref.CorefPruner
+import berkeleyentity.coref.CorefSystem
+import berkeleyentity.coref.DocumentGraph
+import berkeleyentity.coref.DocumentInferencerBasic
+import berkeleyentity.coref.FeatureSetSpecification
+import berkeleyentity.coref.LexicalCountsBundle
+import berkeleyentity.coref.Mention
+import berkeleyentity.coref.NumberGenderComputer
+import berkeleyentity.coref.PairwiseIndexingFeaturizer
+import berkeleyentity.coref.PairwiseIndexingFeaturizerJoint
+import berkeleyentity.coref.PairwiseScorer
+import berkeleyentity.oregonstate.AceJointTaskExample
+import berkeleyentity.oregonstate.JointTaskStructTesting
+import berkeleyentity.oregonstate.MyLatentSvmLearner
+import berkeleyentity.oregonstate.SearchBasedLearner
+import berkeleyentity.oregonstate.pruner.StaticDomainPruner
+import berkeleyentity.sem.BasicWordNetSemClasser
+import berkeleyentity.sem.QueryCountsBundle
+import berkeleyentity.sem.SemClasser
+import edu.berkeley.nlp.futile.fig.basic.Indexer
+import edu.berkeley.nlp.futile.util.Counter
+import edu.berkeley.nlp.futile.util.Logger
+import edu.illinois.cs.cogcomp.sl.core.AbstractFeatureGenerator
+import edu.illinois.cs.cogcomp.sl.core.IInstance
+import edu.illinois.cs.cogcomp.sl.core.IStructure
+import edu.illinois.cs.cogcomp.sl.core.SLModel
+import edu.illinois.cs.cogcomp.sl.core.SLParameters
+import edu.illinois.cs.cogcomp.sl.core.SLProblem
+import edu.illinois.cs.cogcomp.sl.latentsvm.AbstractLatentInferenceSolver
+import edu.illinois.cs.cogcomp.sl.learner.Learner
+import edu.illinois.cs.cogcomp.sl.learner.LearnerFactory
+import edu.illinois.cs.cogcomp.sl.util.FeatureVectorBuffer
+import edu.illinois.cs.cogcomp.sl.util.IFeatureVector
+import edu.illinois.cs.cogcomp.sl.util.WeightVector
+import edu.illinois.cs.cogcomp.sl.core.AbstractInferenceSolver
+
+class MentionEdge(val currIdx: Int, 
+                  val anteIdx: Int, 
+                  val features: Array[Int],
+                  val goldLb: Int,
+                  val consistWithGold: Boolean) {
+  
+  
+}
+
+//////////////////////////////////////
+// for UIUC Structural Learning Lib //
+//////////////////////////////////////
+
+class SingletonInstance(val idx: Int,
+		                    val graph: DocumentGraph,
+		                    val edges: ArrayBuffer[MentionEdge],
+		                    val goldLabel: Int) extends IInstance {
+
+  def checkEdgesHasGold(): Boolean = {
+    val consists = edges.filter { e => e.consistWithGold }
+    val hasGold = (consists.size > 0)
+    assert(hasGold)
+    hasGold
+  }
+  
+  def predictLabel(weights: Array[Double]): Int = {
+    	var bestSc: Float = -Float.MaxValue;
+			var besteIdx: Int = -1;
+			for (i <- 0 until edges.size) {
+			  val e = edges(i)
+			  val score = SingletonDetection.doDotProduct(weights, e.features)
+			  if (score > bestSc) {
+			    bestSc = score
+			    besteIdx = i
+			  }
+			}
+			
+			val predLab = if (edges(besteIdx).currIdx == edges(besteIdx).anteIdx) {
+			  0
+			} else {
+			  1
+			}
+
+			(predLab);
+  }
+
+}
+
+
+
+class SingletonSvmModel extends SLModel {
+  
+  
+  def svmLoadModel(fn: String): Array[Double] =  {
+    SLModel.loadModel(fn);
+    convertDoubleWeightArray();
+  }
+  
+  def convertDoubleWeightArray(): Array[Double] = {
+    //val wv: WeightVector = this.wv
+		val farr = wv.getWeightArray; // (0) is bias
+    var darr = new Array[Double](farr.length);
+	  for (i <- 0 until darr.length) {
+		  darr(i) = farr(i).toDouble;
+	  }
+	  darr;
+  }
+  
+}
+
+
+class SingletonOutput(val output: Int) extends IStructure {
+	override def equals(o1: Any): Boolean = {
+		val vec = o1.asInstanceOf[SingletonOutput];
+		return (this.output == vec.output);
+	}
+}
+
+/*
+class SingletonOutput(val bestEdge: Int,
+                      val output: Int) extends IStructure {
+	override def equals(o1: Any): Boolean = {
+		val vec = o1.asInstanceOf[SingletonOutput];
+		return (this.output == vec.output &&
+		        this.bestEdge == vec.bestEdge);
+	}
+}
+*/
+
+class SingletonFeatGener extends AbstractFeatureGenerator {
+	override def getFeatureVector(xi: IInstance, yhati: IStructure): IFeatureVector = {
+			val x = xi.asInstanceOf[SingletonInstance];
+			val yhat = yhati.asInstanceOf[SingletonOutput];
+			val fb = new FeatureVectorBuffer();
+			
+			val bestEdge = x.edges(yhat.output)
+			val edgeFeature = bestEdge.features
+			
+			for (idx <- edgeFeature) {
+				fb.addFeature(idx, 1.0);
+			}
+			fb.toFeatureVector();
+	}
+	override def getFeatureVectorDiff(x: IInstance, y1: IStructure, y2: IStructure): IFeatureVector = {
+			val f1 = getFeatureVector(x, y1);
+			val f2 = getFeatureVector(x, y2);		
+			return f1.difference(f2);
+	}
+}
+
+class SingletonInferencer() extends AbstractLatentInferenceSolver {
+
+	val callCount = new Counter[Int](); // for efficiency statistic
+
+	def getBestStructure(wi: WeightVector, xi: IInstance): IStructure = {
+			callCount.incrementCount(1, 1);
+			getLossAugmentedBestStructure(wi, xi, null);
+	}
+
+	def getLoss(xi: IInstance, ystari: IStructure, yhati: IStructure): Float = {
+			val x = xi.asInstanceOf[SingletonInstance];
+			val ystar = ystari.asInstanceOf[SingletonOutput];
+			val yhat = yhati.asInstanceOf[SingletonOutput];
+			val loss = getWeightedZeroOneError(yhat, ystar);
+			loss.toFloat; // non-normalized loss
+	}
+	
+	def getWeightedZeroOneError(pred: SingletonOutput, gold: SingletonOutput): Float = {
+	  if (pred.output == gold.output) {
+	    return 0f;
+	  } else {
+	    return 1.0f;
+	  }
+	}
+
+	def getLossAugmentedBestStructure(wi: WeightVector, xi: IInstance, ystari: IStructure): IStructure = {
+
+			callCount.incrementCount(0, 1);
+			val example = xi.asInstanceOf[SingletonInstance];
+			val ystar = ystari.asInstanceOf[SingletonOutput];
+
+			val wgtArr = wi.getDoubleArray();
+			
+			var bestSc: Float = -Float.MaxValue;
+			var besteIdx: Int = -1;
+			for (i <- 0 until example.edges.size) {
+			  val e = example.edges(i)
+			  val addOnLoss = if (ystar != null) {
+				  if (i == ystar.output) {
+				    0f
+				  } else {
+				    1f
+				  }
+			  } else {
+				  0f
+			  }
+
+			  val score = SingletonDetection.doDotProduct(wgtArr, e.features)
+			  val lossAugScore = score + addOnLoss
+			  if (lossAugScore > bestSc) {
+			    bestSc = lossAugScore
+			    besteIdx = i
+			  }
+			}
+
+			(new SingletonOutput(besteIdx));
+	}
+	
+
+
+	override def getBestLatentStructure(weight: WeightVector, ins: IInstance, gold: IStructure): IStructure = {
+			callCount.incrementCount(2, 1);
+			val example = ins.asInstanceOf[SingletonInstance];
+			val ystar = gold.asInstanceOf[SingletonOutput];
+
+			val wgtArr = weight.getDoubleArray();
+			
+			var bestSc: Float = -Float.MaxValue;
+			var besteIdx: Int = -1;
+			for (i <- 0 until example.edges.size) {
+			  val e = example.edges(i)
+			  if (e.consistWithGold) {
+				  val lossAugScore = SingletonDetection.doDotProduct(wgtArr, e.features)
+					if (lossAugScore > bestSc) {
+						bestSc = lossAugScore
+						besteIdx = i
+					}
+			  }
+			}
+
+			(new SingletonOutput(besteIdx));
+	}
+
+	def getWeightArray(wv: WeightVector, sz: Int): Array[Double] = {
+			val farr = wv.getWeightArray; // (0) is bias
+			var darr = new Array[Double](sz);
+			for (i <- 0 until darr.length) {
+				darr(i) = farr(i).toDouble;
+			}
+			darr;
+	}
+
+	def printCount() {
+		println("LossAugmntCall: " + callCount.getCount(0).toInt);
+		println(" InferenceCall: " + callCount.getCount(1).toInt);
+		println("LatentInfrCall: " + callCount.getCount(2).toInt);
+	}
+
+}
+
+
+object SingletonDetection {
+  
+	def doDotProduct(weights: Array[Double], feature: Array[Int]): Float = {
+			var sum: Float = 0
+					for (idx <- feature) {
+						sum += (weights(idx).toFloat)
+					}
+	return sum
+	}
+  
+  val trainSuffix = "v9_auto_conll"
+  val testSuffix = "v9_auto_conll"
+  
+  def main(args: Array[String]) {
+    runBerkOntoCoref()
+  }
+  
+  def runBerkOntoCoref() {
+    val trainPath = "/home/mc/workplace/rand_search/coref/berkfiles/data/ontonotes5/test";//train";
+    val suffix1 = "v4_auto_conll"
+    val testPath = "/home/mc/workplace/rand_search/coref/berkfiles/data/ontonotes5/test";
+    val suffix2 = "v9_auto_conll"
+    
+    //Driver.useGoldMentions = true
+    val modelPath = "model/berkOnto.model";
+    //runTrainEvaluate(trainPath, -1, testPath, -1, modelPath)
+    //runEvaluateGivenModel(testPath, -1, testSuffix, modelPath)
+    //runSingletonTrain(testPath, -1, testSuffix)
+    runSingletonTrain(trainPath, -1, trainSuffix, testPath, -1, testSuffix)
+  }
+  
+  def runEvaluateGivenModel(devPath: String, devSize: Int, sufix: String, modelPath: String) {
+    val scorer = GUtil.load(modelPath).asInstanceOf[PairwiseScorer]
+    runEvaluate(devPath, devSize, sufix, scorer)
+  }
+  
+  def runEvaluate(devPath: String, devSize: Int, sufix: String, scorer: PairwiseScorer) {
+    val conllEvalScriptPath = "/home/mc/workplace/rand_search/coref/scorer/v7/scorer.pl"
+	  val devDocGraphs = prepareTestDocs(devPath, devSize, sufix);
+	  new CorefFeaturizerTrainer().featurizeBasic(devDocGraphs, scorer.featurizer);  // dev docs already know they are dev docs so they don't add features
+	  Logger.startTrack("Decoding dev");
+	  val basicInferencer = new DocumentInferencerBasic();
+	  val (allPredBackptrs, allPredClusterings) = basicInferencer.viterbiDecodeAllFormClusterings(devDocGraphs, scorer);
+	  Logger.logss(CorefEvaluator.evaluateAndRender(devDocGraphs, allPredBackptrs, allPredClusterings, Driver.conllEvalScriptPath, "DEV: ", Driver.analysesToPrint));
+	  Logger.endTrack();
+  }
+  
+  def prepareTestDocs(devPath: String, devSize: Int, sufix: String): Seq[DocumentGraph] = {
+		  val numberGenderComputer = NumberGenderComputer.readBergsmaLinData(Driver.numberGenderDataPath);
+		  val devDocs = CorefSystem.loadCorefDocs(devPath, devSize, sufix, Some(numberGenderComputer));
+		  val devDocGraphs = devDocs.map(new DocumentGraph(_, false));
+		  EntitySystem.preprocessDocsCacheResources(devDocGraphs);
+		  CorefPruner.buildPruner(Driver.pruningStrategy).pruneAll(devDocGraphs);
+		  devDocGraphs;
+  }
+
+  def runSingletonTrain(trainPath: String, trainSize: Int, sufix: String,
+                        devPath: String, devSize: Int, tstSufix: String) {
+    val numberGenderComputer = NumberGenderComputer.readBergsmaLinData(Driver.numberGenderDataPath);
+    val queryCounts: Option[QueryCountsBundle] = None;
+    val trainDocs = CorefSystem.loadCorefDocs(trainPath, trainSize, sufix, Some(numberGenderComputer));
+    // Randomize
+    val trainDocsReordered = new scala.util.Random(0).shuffle(trainDocs);
+    val lexicalCounts = LexicalCountsBundle.countLexicalItems(trainDocs, Driver.lexicalFeatCutoff);
+    val semClasser: Option[SemClasser] = Driver.semClasserType match {
+      case "basic" => Some(new BasicWordNetSemClasser);
+      case e => throw new RuntimeException("Other semclassers not implemented");
+    }
+    val trainDocGraphs = trainDocsReordered.map(new DocumentGraph(_, true));
+    EntitySystem.preprocessDocsCacheResources(trainDocGraphs);
+    CorefPruner.buildPruner(Driver.pruningStrategy).pruneAll(trainDocGraphs);
+    
+    val featureIndexer = new Indexer[String]();
+    featureIndexer.getIndex(PairwiseIndexingFeaturizerJoint.UnkFeatName);
+    val featureSetSpec = FeatureSetSpecification(Driver.pairwiseFeats, Driver.conjScheme, Driver.conjFeats, Driver.conjMentionTypes, Driver.conjTemplates);
+    val basicFeaturizer = new PairwiseIndexingFeaturizerJoint(featureIndexer, featureSetSpec, lexicalCounts, queryCounts, semClasser);
+    val featurizerTrainer = new CorefFeaturizerTrainer();
+    featurizerTrainer.featurizeBasic(trainDocGraphs, basicFeaturizer);
+    PairwiseIndexingFeaturizer.printFeatureTemplateCounts(featureIndexer)
+
+    val trnExs = extractSingletonInstances(trainDocGraphs, true);
+    
+    /////////// test documents
+    val devDocGraphs = prepareTestDocs(devPath, devSize, tstSufix);
+    featurizerTrainer.featurizeBasic(devDocGraphs, basicFeaturizer);
+    val tstExs = extractSingletonInstances(devDocGraphs, false);
+    
+    val wght = uiucStructLearning(trnExs, featureIndexer, tstExs)
+  }
+  
+  
+  
+  //////////////////////////////////////////////////////////
+  //// Singleton Instances
+  //////////////////////////////////////////////////////////
+  
+  //// SVM
+  
+  def constructProblem(exs: Seq[SingletonInstance]): SLProblem = {
+    val sp: SLProblem = new SLProblem();
+    for (ex <- exs) {
+      val goldOutput = new SingletonOutput(ex.goldLabel); // a randome output ...
+      sp.addExample(ex, goldOutput);
+    }
+    sp;
+  }
+  
+  def uiucStructLearning(trainExs: Seq[SingletonInstance], 
+                         featIndexer: Indexer[String],
+                         testExs: Seq[SingletonInstance]): Array[Double] = {
+    
+		val trainTimer = new MyTimeCounter("Training time");
+	  trainTimer.start();
+    
+    
+    val model = new SingletonSvmModel();
+    
+    val spTrain = constructProblem(trainExs);
+
+    val featGenr = new SingletonFeatGener();
+    val latentInfr = new SingletonInferencer();
+    
+    val slcfgPath = "/home/mc/workplace/rand_search/sl-config/ontonotes-singleton-DCD.config"; 
+    val para = new SLParameters();
+    para.loadConfigFile(slcfgPath);
+    para.TOTAL_NUMBER_FEATURE = featIndexer.size();
+
+    val baseLearner: Learner = LearnerFactory.getLearner(latentInfr, featGenr, para);
+    
+    //// about latent settings
+    val latentPara = new SLParameters();
+    latentPara.TOTAL_NUMBER_FEATURE = featIndexer.size();
+    latentPara.MAX_NUM_ITER = 1;
+    
+    val latentLearner = new GeneralLatentSvmLearner(baseLearner, featGenr, latentPara, latentInfr);
+    model.infSolver = latentInfr;
+    model.wv = latentLearner.train(spTrain, new WeightVector(latentPara.TOTAL_NUMBER_FEATURE), testExs);
+    WeightVector.printSparsity(model.wv);
+    
+    latentInfr.printCount();
+    println("C = " + baseLearner.getParameters.C_FOR_STRUCTURE);
+    println("Iterations = " + latentPara.MAX_NUM_ITER);
+    
+    // training time count~
+    trainTimer.end();
+    trainTimer.printSecond("Training time");
+
+    // save the model
+    model.convertDoubleWeightArray()
+  }
+
+  def runSingletonEvaluation(testExs: Seq[SingletonInstance], weights: Array[Double]) {
+    var tpos = 0
+    var tneg = 0
+    var fpos = 0
+    var fneg = 0
+    for (pm <- testExs) {
+    	val predLb = pm.predictLabel(weights)//predictLabel(pm, model)
+    	val lbl = pm.goldLabel
+    	if (predLb > 0 && lbl > 0) {
+    		tpos += 1
+    	} else if (predLb == 0 && lbl > 0) {
+    		fneg += 1
+    	} else if (predLb > 0 && lbl == 0) {
+    		fpos += 1
+    	} else if (predLb == 0 && lbl == 0) {
+    		tneg += 1
+    	}
+    }
+    
+    val zeroOne = tpos.toDouble / (testExs.size).toDouble
+    println("0-1Accuracy: " + tpos + " / " + (testExs.size) + " = " + zeroOne);
+    val precision = tpos.toDouble / (tpos + fpos).toDouble
+    println("Precision: " + tpos + " / " + (tpos + fpos) + " = " + precision);
+    val recall = tpos.toDouble / (tpos + fneg).toDouble
+    println("Recall: " + tpos + " / " + (tpos + fneg) + " = " + recall);
+    val recall2 = tpos.toDouble / (19764).toDouble
+    println("Recall2: " + tpos + " / " + (19764) + " = " + recall2);
+  }
+  
+  
+  //////////////////////
+  //// Learning
+  //////////////////////
+  
+  def runSingletonDetectSVMLearning() {
+    
+  }
+  
+  def bool2int(b:Boolean) = if (b) 1 else 0
+  
+  def extractSingletonInstances(docs: Seq[DocumentGraph], addFeat: Boolean) = {
+    val singletonInsts = new ArrayBuffer[SingletonInstance]();
+    for (d <- docs) {
+      val docInsts = extractSingletonInstancesOneDoc(d, addFeat);
+      singletonInsts ++= docInsts;
+    }
+    
+    val posInsts = singletonInsts.filter { m => m.goldLabel > 0 }
+    val negInsts = singletonInsts.filter { m => m.goldLabel == 0 }
+    println("Pos count = " + posInsts.size + " Neg count = " + negInsts.size)
+    
+    singletonInsts.map { x => x.checkEdgesHasGold() }
+    
+    singletonInsts.toSeq
+  }
+  
+  def extractSingletonInstancesOneDoc(doc: DocumentGraph, addFeat: Boolean): ArrayBuffer[SingletonInstance] = {
+    val ies = new ArrayBuffer[ArrayBuffer[MentionEdge]](doc.size());
+    for (i <- 0 until doc.size()) {
+      ies += (new ArrayBuffer[MentionEdge]());
+    }
+    val indexToEdges = ies.toArray
+    
+    for (i <- 0 until doc.size) {
+      //val antes = doc.getAllAntecedentsCurrentPruning(i);
+      val antes = doc.getAllAntecedentsNoPruning(i);
+      for (j <- antes) {
+        //if (i != j) {
+          val feature = doc.cachedFeats(i)(j)
+          val goldEdgeLabel = decideEdgeGoldLabel(doc, i, j)
+          val edgeConsist = decideConsistency(doc, i, j, goldEdgeLabel)
+          val edgeij = new MentionEdge(i, j, feature, goldEdgeLabel, edgeConsist)
+          indexToEdges(i) += edgeij;
+          indexToEdges(j) += edgeij;
+        //}
+      }
+    }
+    
+    //// features
+    val insts = new ArrayBuffer[SingletonInstance]()
+    for (i <- 0 until doc.size()) {
+      val lb = pickMentInstLabel(indexToEdges(i))
+      val mentInst = new SingletonInstance(i, doc, indexToEdges(i), lb);
+      insts += (mentInst);
+    }
+    
+    insts
+  }
+  
+  def decideEdgeGoldLabel(doc: DocumentGraph, curIdx: Int, anteIdx: Int): Int = {
+    
+    val mention = doc.getMention(curIdx)
+    val matched = hasMatchedGoldMention(doc, mention)
+    // span is matched
+    val label = if (matched) {
+      if (anteIdx == curIdx) {
+        0
+      } else {
+        bool2int(doc.isGoldNoPruning(curIdx, anteIdx))
+      }
+    // span not matched at all
+    } else {
+      0
+    }
+    
+    label
+  }
+  
+  def decideConsistency(doc: DocumentGraph, curIdx: Int, anteIdx: Int, goldLabel: Int): Boolean = {
+    
+    val consistent = if (goldLabel > 0) {
+      true
+    } else {
+      if (anteIdx == curIdx) {
+        true
+      } else {
+        false
+      }
+    }
+    
+    consistent
+  }
+  
+  def hasMatchedGoldMention(doc: DocumentGraph, pm: Mention): Boolean = {
+    val goldMents = doc.corefDoc.goldMentions;
+    val matched = goldMents.filter { m => ((m.sentIdx == pm.sentIdx) && (m.startIdx == pm.startIdx) && (m.endIdx == pm.endIdx)) }
+    if (matched.size > 0) {
+      return true
+    } else {
+      return false
+    }
+  }
+  
+  def pickMentInstLabel(edges: ArrayBuffer[MentionEdge]) = {
+    var maxLb = 0;
+    maxLb = edges.map { me => me.goldLb }.max
+    maxLb
+  }
+}

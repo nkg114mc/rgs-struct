@@ -1,0 +1,150 @@
+==== scene ====
+Sparsity 1: 1137 examples
+Sparsity 2: 73 examples
+Sparsity 3: 1 examples
+------
+Sparsity 1: 1093 examples
+Sparsity 2: 103 examples
+Load train 1211, test 1196
+Feature dimension 294 label dimension 6
+==== emotions ====
+Sparsity 1: 131 examples
+Sparsity 2: 202 examples
+Sparsity 3: 58 examples
+------
+Sparsity 1: 47 examples
+Sparsity 2: 113 examples
+Sparsity 3: 42 examples
+Load train 391, test 202
+Feature dimension 72 label dimension 6
+==== medical ====
+Sparsity 1: 254 examples
+Sparsity 2: 73 examples
+Sparsity 3: 6 examples
+------
+Sparsity 1: 498 examples
+Sparsity 2: 139 examples
+Sparsity 3: 8 examples
+Load train 333, test 645
+Feature dimension 1449 label dimension 45
+==== LLOG ====
+Sparsity 0: 123 examples
+Sparsity 1: 543 examples
+Sparsity 2: 145 examples
+Sparsity 3: 48 examples
+Sparsity 4: 14 examples
+Sparsity 5: 3 examples
+------
+Sparsity 0: 84 examples
+Sparsity 1: 365 examples
+Sparsity 2: 100 examples
+Sparsity 3: 31 examples
+Sparsity 4: 3 examples
+Sparsity 5: 1 examples
+Load train 876, test 584
+Feature dimension 1004 label dimension 75
+==== SLASHDOT ====
+Sparsity 1: 1902 examples
+Sparsity 2: 335 examples
+Sparsity 3: 32 examples
+------
+Sparsity 1: 1241 examples
+Sparsity 2: 259 examples
+Sparsity 3: 13 examples
+Load train 2269, test 1513
+Feature dimension 1079 label dimension 22
+==== genbasebin ====
+Sparsity 1: 386 examples
+Sparsity 2: 48 examples
+Sparsity 3: 20 examples
+Sparsity 4: 5 examples
+Sparsity 5: 2 examples
+Sparsity 6: 2 examples
+------
+Sparsity 1: 174 examples
+Sparsity 2: 10 examples
+Sparsity 3: 11 examples
+Sparsity 4: 3 examples
+Sparsity 6: 1 examples
+Load train 463, test 199
+Feature dimension 2370 label dimension 27
+
+
+
+
+////////////////////////////////
+
+==== tmc2007-500 ====
+Sparsity 1: 5949 examples
+Sparsity 2: 7867 examples
+Sparsity 3: 5541 examples
+Sparsity 4: 1522 examples
+Sparsity 5: 443 examples
+Sparsity 6: 122 examples
+Sparsity 7: 56 examples
+Sparsity 8: 13 examples
+Sparsity 9: 5 examples
+Sparsity 10: 1 examples
+------
+Sparsity 1: 1925 examples
+Sparsity 2: 2728 examples
+Sparsity 3: 1769 examples
+Sparsity 4: 462 examples
+Sparsity 5: 137 examples
+Sparsity 6: 40 examples
+Sparsity 7: 12 examples
+Sparsity 8: 2 examples
+Sparsity 9: 1 examples
+Sparsity 10: 1 examples
+Load train 21519, test 7077
+Feature dimension 500 label dimension 22
+==== yeast ====
+Sparsity 1: 24 examples
+Sparsity 2: 254 examples
+Sparsity 3: 68 examples
+Sparsity 4: 684 examples
+Sparsity 5: 114 examples
+Sparsity 6: 248 examples
+Sparsity 7: 64 examples
+Sparsity 8: 36 examples
+Sparsity 9: 5 examples
+Sparsity 10: 2 examples
+Sparsity 11: 1 examples
+------
+Sparsity 1: 8 examples
+Sparsity 2: 158 examples
+Sparsity 3: 44 examples
+Sparsity 4: 418 examples
+Sparsity 5: 59 examples
+Sparsity 6: 167 examples
+Sparsity 7: 38 examples
+Sparsity 8: 19 examples
+Sparsity 9: 4 examples
+Sparsity 10: 2 examples
+Load train 1500, test 917
+Feature dimension 103 label dimension 14
+==== enron ====
+Sparsity 1: 135 examples
+Sparsity 2: 169 examples
+Sparsity 3: 338 examples
+Sparsity 4: 241 examples
+Sparsity 5: 144 examples
+Sparsity 6: 55 examples
+Sparsity 7: 32 examples
+Sparsity 8: 5 examples
+Sparsity 9: 3 examples
+Sparsity 11: 1 examples
+------
+Sparsity 1: 61 examples
+Sparsity 2: 102 examples
+Sparsity 3: 171 examples
+Sparsity 4: 131 examples
+Sparsity 5: 70 examples
+Sparsity 6: 25 examples
+Sparsity 7: 13 examples
+Sparsity 8: 4 examples
+Sparsity 10: 1 examples
+Sparsity 12: 1 examples
+Load train 1123, test 579
+Feature dimension 1001 label dimension 53
+

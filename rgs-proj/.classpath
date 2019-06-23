@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<classpath>
+	<classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+	<classpathentry kind="src" path="src"/>
+	<classpathentry kind="lib" path="lib/args4j-20120919.jar"/>
+	<classpathentry kind="lib" path="lib/BerkeleyParser-1.7.jar"/>
+	<classpathentry kind="lib" path="lib/bliki.jar"/>
+	<classpathentry kind="lib" path="lib/futile.jar"/>
+	<classpathentry kind="lib" path="lib/illinois-sl.jar"/>
+	<classpathentry kind="lib" path="lib/jaws-bin.jar"/>
+	<classpathentry kind="lib" path="lib/jwi.jar"/>
+	<classpathentry kind="lib" path="lib/Ranklib.jar"/>
+	<classpathentry kind="lib" path="lib/scala-xml-2.11.0-M4.jar"/>
+	<classpathentry kind="lib" path="lib/trove-3.0.3.jar"/>
+	<classpathentry kind="lib" path="lib/weka.jar"/>
+	<classpathentry kind="lib" path="/media/mc/Ubuntu2/workplace2/rand-search/no-git-release/rgs-proj/lib/xgboost4j-example-0.7.jar"/>
+	<classpathentry kind="lib" path="/media/mc/Ubuntu2/workplace2/rand-search/no-git-release/rgs-proj/lib/xgboost4j-0.7-jar-with-dependencies.jar"/>
+	<classpathentry kind="output" path="bin"/>
+</classpath>

@@ -1,0 +1,637 @@
+package berkeleyentity.oregonstate
+
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.ObjectInputStream
+import java.io.ObjectOutputStream
+import scala.Array.canBuildFrom
+import scala.collection.JavaConverters.asScalaBufferConverter
+import scala.collection.mutable.ArrayBuffer
+import scala.collection.mutable.HashMap
+import scala.collection.mutable.HashSet
+import berkeleyentity.Chunk
+import berkeleyentity.Driver.WikifierType
+import berkeleyentity.joint.FactorGraphFactoryACE
+import berkeleyentity.joint.FactorGraphFactoryOnto
+import berkeleyentity.joint.GeneralTrainer
+import berkeleyentity.joint.JointComputerShared
+import berkeleyentity.joint.JointDoc
+import berkeleyentity.joint.JointDocACE
+import berkeleyentity.joint.JointFeaturizerShared
+import berkeleyentity.joint.JointLossFcns
+import berkeleyentity.wiki.WikificationEvaluator
+import berkeleyentity.wiki.WikipediaInterface
+import berkeleyentity.lang.Language
+import berkeleyentity.ner.MCNerFeaturizer
+import berkeleyentity.ner.NEEvaluator
+import berkeleyentity.ner.NerFeaturizer
+import berkeleyentity.ner.NerSystemLabeled
+import berkeleyentity.sem.BasicWordNetSemClasser
+import berkeleyentity.sem.QueryCountsBundle
+import berkeleyentity.sem.SemClasser
+import berkeleyentity.wiki._
+import edu.berkeley.nlp.futile.fig.basic.IOUtils
+import edu.berkeley.nlp.futile.fig.basic.Indexer
+import edu.berkeley.nlp.futile.util.Logger
+import berkeleyentity.xdistrib.CorefComputerDistrib
+import berkeleyentity.xdistrib.ComponentFeaturizer
+import berkeleyentity.xdistrib.DocumentGraphComponents
+import edu.berkeley.nlp.futile.fig.exec.Execution
+import berkeleyentity.Driver
+import berkeleyentity.GUtil
+import berkeleyentity.ConllDoc
+import berkeleyentity.WordNetInterfacer
+import berkeleyentity.ConllDocWriter
+import berkeleyentity.ConllDocReader
+import berkeleyentity.sem.BrownClusterInterface
+import berkeleyentity.ner.NerPrunerFromMarginals
+import berkeleyentity.ner.NerPruner
+import berkeleyentity.coref._
+import berkeleyentity.joint.JointPredictor
+import berkeleyentity.ilp.DocumentInferencerILP
+
+
+import java.util.ArrayList;
+import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.CopyOption._;
+import java.io.File;
+import scala.util.control.Breaks._
+import scala.collection.mutable.HashMap
+import scala.collection.mutable.ArrayBuffer
+import scala.util.Random
+import edu.berkeley.nlp.futile.util.Counter
+
+import berkeleyentity.sem.BrownClusterInterface
+import berkeleyentity.wiki.WikificationEvaluator
+import berkeleyentity.coref.MentionPropertyComputer
+import berkeleyentity.sem.QueryCountsBundle
+import berkeleyentity.joint.JointDoc
+import berkeleyentity.joint.GeneralTrainer
+import berkeleyentity.joint.JointDocACE
+import berkeleyentity.joint.JointComputerShared
+import berkeleyentity.coref.NumberGenderComputer
+import berkeleyentity.sem.BasicWordNetSemClasser
+import berkeleyentity.coref.FeatureSetSpecification
+import berkeleyentity.coref.CorefEvaluator
+import berkeleyentity.coref.DocumentGraph
+import berkeleyentity.joint.FactorGraphFactoryACE
+import berkeleyentity.wiki.WikipediaInterface
+import berkeleyentity.joint.FactorGraphFactoryOnto
+import berkeleyentity.joint.JointPredictor
+import berkeleyentity.ner.MCNerFeaturizer
+import berkeleyentity.coref.CorefDoc
+import berkeleyentity.coref.CorefDocAssemblerACE
+import berkeleyentity.lang.Language
+import berkeleyentity.joint.JointFeaturizerShared
+import berkeleyentity.sem.SemClasser
+import berkeleyentity.wiki.ACEMunger
+import berkeleyentity.wiki.DocWikiAnnots
+import berkeleyentity.ner.NerFeaturizer
+import berkeleyentity.coref.CorefPruner
+import berkeleyentity.coref.CorefDocAssembler
+import berkeleyentity.wiki.CorpusWikiAnnots
+import berkeleyentity.coref.LexicalCountsBundle
+import berkeleyentity.ner.NEEvaluator
+import berkeleyentity.wiki.WikiAnnotReaderWriter
+import berkeleyentity.coref.OrderedClusteringBound
+import berkeleyentity.coref.PairwiseIndexingFeaturizerJoint
+import berkeleyentity.ner.NerSystemLabeled
+import berkeleyentity.coref.PairwiseIndexingFeaturizer
+import edu.berkeley.nlp.futile.fig.basic.Indexer
+import edu.berkeley.nlp.futile.fig.basic.IOUtils
+import edu.berkeley.nlp.futile.util.Logger
+import berkeleyentity.ner.NerPruner
+import berkeleyentity.joint.JointLossFcns
+import berkeleyentity.coref.PairwiseScorer
+import berkeleyentity.coref.OrderedClustering
+import berkeleyentity.coref.PairwiseLossFunctions
+import berkeleyentity.coref.UID
+import berkeleyentity.wiki._
+import berkeleyentity.joint.JointPredictorACE
+import berkeleyentity.coref.CorefSystem
+import berkeleyentity.ConllDocReader
+import berkeleyentity.Chunk
+import berkeleyentity.ner.MCNerExample
+import berkeleyentity.Driver;
+
+
+import berkeleyentity.wiki.ACETester;
+import berkeleyentity.wiki.WikipediaAuxDB;
+import berkeleyentity.wiki.WikipediaCategoryDB;
+import berkeleyentity.wiki.WikipediaInterface;
+import berkeleyentity.wiki.WikipediaLinkDB;
+import berkeleyentity.wiki.WikipediaRedirectsDB;
+import berkeleyentity.wiki.WikipediaTitleGivenSurfaceDB;
+import berkeleyentity.wiki.JointQueryDenotationChoiceComputer
+import berkeleyentity.wiki.JointQueryDenotationChooser
+import berkeleyentity.wiki.JointQueryDenotationExample
+import berkeleyentity.wiki.Query
+import berkeleyentity.wiki.WikiAnnotReaderWriter
+import berkeleyentity.wiki.WikificationEvaluator
+import berkeleyentity.wiki.CorpusWikiAnnots
+import berkeleyentity.wiki.DocWikiAnnots
+
+import berkeleyentity.Driver
+import berkeleyentity.lang.Language
+import edu.berkeley.nlp.futile.LightRunner
+import berkeleyentity.coref.CorefDocAssembler
+import berkeleyentity.ConllDocReader
+import berkeleyentity.coref.MentionPropertyComputer
+import berkeleyentity.GUtil
+import edu.berkeley.nlp.futile.fig.basic.Indexer
+import berkeleyentity.joint.LikelihoodAndGradientComputer
+import scala.collection.mutable.ArrayBuffer
+import berkeleyentity.coref.CorefDoc
+import edu.berkeley.nlp.futile.math.SloppyMath
+import edu.berkeley.nlp.futile.util.Logger
+import berkeleyentity.Chunk
+import berkeleyentity.joint.GeneralTrainer
+import berkeleyentity.coref.NumberGenderComputer
+import berkeleyentity.coref.Mention
+
+class NerWikiValuePair(val nerValueIndex: Int,
+                       val wikiValueIndex: Int,
+                       val jointScore: Double) {
+  
+}
+
+class NerWikiOnlyLearner() {
+  
+  
+  // return 0-1 loss according to ground truth
+  def getTrueLoss(jointExample: AceJointTaskExample, state: SearchState) = {
+    val zeroOneLoss = jointExample.getZeroOneError(state.output);
+    val acc = jointExample.totalSize - zeroOneLoss;
+    acc;
+  }
+  
+  def printActionVerbose(jointExample: AceJointTaskExample, action: SearchAction) = {
+    val str = "Change variable(" + action.idx + ") from value("+ jointExample.getVariableGivenIndex(action.idx).values(action.undoOldValue).value +") to value(" + jointExample.getVariableGivenIndex(action.idx).values(action.newValIdx).value + ")!";
+    str;
+  }
+  
+  def almostEqualDouble(v1: Double, v2: Double, err: Double) = {
+    ((v1 - v2).abs <= err);
+  }
+  def printScoreCheck(v1: Double, v2: Double, v3: Double) = {
+    val err = 0.0000001;
+    //if (v1 == v2 && v2 == v3 && v1 == v3) {
+    if (almostEqualDouble(v1, v2, err) && almostEqualDouble(v2, v3, err) && almostEqualDouble(v1, v3, err)) {
+      true;
+    } else {
+      throw new RuntimeException("(" + v1 + ", " + v2 + ", " + v3 + ")");
+      false;
+    }
+  }
+  
+  def nerwikiTravialInferencePredict(jointExample: AceJointTaskExample, wght: Array[Double]) = {
+
+	  val numMentions = jointExample.numMentions;
+	  for (i <- 0 until numMentions) {
+		  jointExample.corefVars(i).values.map(x => x.computeScoreAndCachedNonPruned(wght))
+		  jointExample.nerVars(i).values.map(x => x.computeScoreAndCachedNonPruned(wght))
+		  jointExample.wikiVars(i).values.map( x => x.computeScoreAndCachedNonPruned(wght))
+	  }
+
+	  // binary factors
+	  for (i <- 0 until numMentions) {
+		  jointExample.nerWikiFactors(i).computeScoreAndCachedNonPruned(wght);
+	  }
+    
+    
+    //// inference
+    val result = new Array[Int](jointExample.totalSize);
+    // coref
+    for (i <- 0 until numMentions) {
+      val cbestvidx = jointExample.corefVars(i).getBestValue(wght);
+      result(i + jointExample.corefOutputArrStart) = cbestvidx;
+    }
+    
+    // ner & wiki
+    for (i <- 0 until numMentions) {
+    	val nwFactor = jointExample.nerWikiFactors(i);
+      val nerV = jointExample.nerVars(i);
+      val wikiV = jointExample.wikiVars(i);
+
+      val n1values = nwFactor.node1.values;
+      val n2values = nwFactor.node2.values;
+      
+    	val nwValuePairs = new ArrayBuffer[NerWikiValuePair]();
+    	for (j <- 0 until n1values.size) {
+    		if (!n1values(j).isPruned) {
+    			for (k <- 0 until n2values.size) {
+    				if (!n2values(k).isPruned) {
+              
+              if (n1values(j).cachedScore != nerV.values(j).cachedScore) {
+                throw new RuntimeException("ner score inconsiste: " + n1values(j).cachedScore +" != "+ nerV.values(j).cachedScore);
+              }
+              if (n2values(k).cachedScore != wikiV.values(k).cachedScore) {
+                throw new RuntimeException("wiki score inconsiste: " + n2values(k).cachedScore +" != "+ wikiV.values(k).cachedScore);
+              }
+              
+              val sc = (n1values(j).cachedScore + n2values(k).cachedScore + nwFactor.cachedScores(j)(k));
+              val vpair = new NerWikiValuePair(j, k, sc);
+              nwValuePairs += vpair;
+    				}
+    			}
+    		}
+    	}
+
+      ////
+      
+      var bestIdx = -1;
+      var bestScore = -Double.MaxValue;
+      for (jj <- 0 until nwValuePairs.size) {
+        if (nwValuePairs(jj).jointScore > bestScore) {
+          bestScore = nwValuePairs(jj).jointScore;
+          bestIdx = jj;
+        }
+      }
+      
+      result(i + jointExample.nerOutputArrStart) = nwValuePairs(bestIdx).nerValueIndex;
+    	result(i + jointExample.wikiOutputArrStart) = nwValuePairs(bestIdx).wikiValueIndex;
+    }
+
+	  // joint factors
+	  /*
+      // ternary factors
+      for (i <- 0 until numMentions) {
+        val jdomainIdxs = corefVars(i).getAllNonPruningValueIndices();
+        for (jvIdx <- jdomainIdxs) {
+          val j = corefVars(i).values(jvIdx).value;
+          corefNerFactors(i)(j).computeScoreAndCachedNonPruned(wght);
+          corefWikiFactors(i)(j).computeScoreAndCachedNonPruned(wght);
+        }
+      }*/
+
+	  // return current state
+	  result;
+  }
+  
+  def nerwikiTravialInferenceTruth(jointExample: AceJointTaskExample, wght: Array[Double]) = {
+
+    val numMentions = jointExample.numMentions;
+    for (i <- 0 until numMentions) {
+      jointExample.corefVars(i).values.map(x => x.computeScoreAndCachedNonPruned(wght))
+      jointExample.nerVars(i).values.map(x => x.computeScoreAndCachedNonPruned(wght))
+      jointExample.wikiVars(i).values.map( x => x.computeScoreAndCachedNonPruned(wght))
+    }
+
+    // binary factors
+    for (i <- 0 until numMentions) {
+      jointExample.nerWikiFactors(i).computeScoreAndCachedNonPruned(wght);
+    }
+    
+    
+    //// inference
+    val result = new Array[Int](jointExample.totalSize);
+    // coref
+    for (i <- 0 until numMentions) {
+      val cbestvidx = jointExample.corefVars(i).getCorrectBestValue(wght);
+      result(i + jointExample.corefOutputArrStart) = cbestvidx;
+    }
+    
+    // ner & wiki
+    for (i <- 0 until numMentions) {
+      val nwFactor = jointExample.nerWikiFactors(i);
+      val nerV = jointExample.nerVars(i);
+      val wikiV = jointExample.wikiVars(i);
+
+      val n1values = nwFactor.node1.values;
+      val n2values = nwFactor.node2.values;
+      
+      val nwValuePairs = new ArrayBuffer[NerWikiValuePair]();
+      for (j <- 0 until n1values.size) {
+        if (!n1values(j).isPruned) {
+          for (k <- 0 until n2values.size) {
+            if (!n2values(k).isPruned) {
+              
+              if (n1values(j).cachedScore != nerV.values(j).cachedScore) {
+                throw new RuntimeException("ner score inconsiste: " + n1values(j).cachedScore +" != "+ nerV.values(j).cachedScore);
+              }
+              if (n2values(k).cachedScore != wikiV.values(k).cachedScore) {
+                throw new RuntimeException("wiki score inconsiste: " + n2values(k).cachedScore +" != "+ wikiV.values(k).cachedScore);
+              }
+              
+              if ((n1values(j).isCorrect) && (n2values(k).isCorrect)) {
+                val sc = (n1values(j).cachedScore + n2values(k).cachedScore + nwFactor.cachedScores(j)(k));
+                val vpair = new NerWikiValuePair(j, k, sc);
+                nwValuePairs += vpair;
+              }
+              
+            }
+          }
+        }
+      }
+
+      ////
+      
+      var bestIdx = -1;
+      var bestScore = -Double.MaxValue;
+      for (jj <- 0 until nwValuePairs.size) {
+        if (nwValuePairs(jj).jointScore > bestScore) {
+          bestScore = nwValuePairs(jj).jointScore;
+          bestIdx = jj;
+        }
+      }
+      
+      result(i + jointExample.nerOutputArrStart) = nwValuePairs(bestIdx).nerValueIndex;
+      result(i + jointExample.wikiOutputArrStart) = nwValuePairs(bestIdx).wikiValueIndex;
+    }
+    // return current state
+    result;
+  }
+  
+  def nerwikiTravialInference(jointExample: AceJointTaskExample, wght: Array[Double], useGold: Boolean) = {
+    val result = if (useGold) {
+      nerwikiTravialInferenceTruth(jointExample, wght);
+    } else {
+      nerwikiTravialInferencePredict(jointExample, wght);
+    }
+    result;
+  }
+  
+  
+  // run learner
+  def runLearningDelayUpdate(allTrains: ArrayBuffer[AceJointTaskExample], 
+                             featIndexer: Indexer[String],
+                             testExs: ArrayBuffer[AceJointTaskExample],
+                             unaryPruner: SearchDomainPruner,
+                             numIter: Int): Array[Double] = {
+
+      var weight = Array.fill[Double](featIndexer.size)(0);
+      var weightSum = Array.fill[Double](featIndexer.size)(0);
+      var lastWeight = Array.fill[Double](featIndexer.size)(0);
+
+      val Iteration = numIter;//10;
+      val learnRate = 0.1;
+      val lambda = 1e-8;
+
+      var updateCnt = 0;
+      var lastUpdtCnt = 0;
+
+      for (iter <- 0 until Iteration) {
+        lastUpdtCnt = updateCnt;
+        Array.copy(weight, 0, lastWeight, 0, weight.length);
+
+        println("Iteration " + iter);
+        var exId = 0;
+        for (example <- allTrains) {
+
+          exId += 1;
+
+          //println("docCnt " + exId);
+          val predBestOutput = nerwikiTravialInference(example, weight, false); // my prediction
+          val goldBestOutput = nerwikiTravialInference(example, weight, true); // gold best
+
+          
+          // update?
+          if (!example.isCorrectOutput(predBestOutput)) {
+            updateCnt += 1;
+            if (updateCnt % 1000 == 0) println("Update " + updateCnt);
+            
+            val featGold = example.featurize(goldBestOutput);
+            val featPred = example.featurize(predBestOutput);
+            
+            updateWeight(weight, featGold, featPred, learnRate, lambda);
+            SingleTaskStructTesting.sumWeight(weightSum, weight);
+          }
+        }
+
+        ///////////////////////////////////////////////////
+        // have a test after each iteration (for learning curve)
+        val tmpAvg = new Array[Double](weightSum.size)
+        Array.copy(weightSum, 0, tmpAvg, 0, weightSum.size);
+        SingleTaskStructTesting.divdeNumber(tmpAvg, updateCnt.toDouble);
+
+        greedySearchQuickTest(allTrains, tmpAvg, unaryPruner);
+        greedySearchQuickTest(testExs, tmpAvg, unaryPruner);
+        println("Iter Update Cnt = " + (updateCnt - lastUpdtCnt));
+      }
+
+      SingleTaskStructTesting.divdeNumber(weightSum, updateCnt.toDouble);
+
+      weightSum;
+  }
+  
+  def runLearningNerWikiVariable(allTrains: ArrayBuffer[AceJointTaskExample], 
+                                 featIndexer: Indexer[String],
+                                 testExs: ArrayBuffer[AceJointTaskExample],
+                                 unaryPruner: SearchDomainPruner,
+                                 numIter: Int): Array[Double] = {
+
+      var weight = Array.fill[Double](featIndexer.size)(0);
+      var weightSum = Array.fill[Double](featIndexer.size)(0);
+      var lastWeight = Array.fill[Double](featIndexer.size)(0);
+
+      val Iteration = numIter;//10;
+      val learnRate = 0.1;
+      val lambda = 1e-8;
+
+      var updateCnt = 0;
+      var lastUpdtCnt = 0;
+
+      //val trainExs = extractNerWikiExamples();
+      
+      for (iter <- 0 until Iteration) {
+        lastUpdtCnt = updateCnt;
+        Array.copy(weight, 0, lastWeight, 0, weight.length);
+
+        println("Iteration " + iter);
+        var exId = 0;
+        for (example <- allTrains) {
+
+          exId += 1;
+
+          //println("docCnt " + exId);
+          val predBestOutput = nerwikiTravialInference(example, weight, false); // my prediction
+          val goldBestOutput = nerwikiTravialInference(example, weight, true); // gold best
+
+          
+          // update?
+          if (!example.isCorrectOutput(predBestOutput)) {
+            updateCnt += 1;
+            if (updateCnt % 1000 == 0) println("Update " + updateCnt);
+            
+            val featGold = example.featurize(goldBestOutput);
+            val featPred = example.featurize(predBestOutput);
+            
+            updateWeight(weight, featGold, featPred, learnRate, lambda);
+            SingleTaskStructTesting.sumWeight(weightSum, weight);
+          }
+        }
+
+        ///////////////////////////////////////////////////
+        // have a test after each iteration (for learning curve)
+        val tmpAvg = new Array[Double](weightSum.size)
+        Array.copy(weightSum, 0, tmpAvg, 0, weightSum.size);
+        SingleTaskStructTesting.divdeNumber(tmpAvg, updateCnt.toDouble);
+
+        greedySearchQuickTest(allTrains, tmpAvg, unaryPruner);
+        greedySearchQuickTest(testExs, tmpAvg, unaryPruner);
+        println("Iter Update Cnt = " + (updateCnt - lastUpdtCnt));
+      }
+
+      SingleTaskStructTesting.divdeNumber(weightSum, updateCnt.toDouble);
+
+      weightSum;
+  }
+
+  def updateWeight(currentWeight: Array[Double], 
+                  featGold: HashMap[Int,Double],
+                  featPred: HashMap[Int,Double],
+                  eta: Double,
+                  lambda: Double) {
+    var gradient = Array.fill[Double](currentWeight.length)(0);//new Array[Double](currentWeight.length);
+    for ((i, vgold) <- featGold) {
+      gradient(i) += (vgold);
+    }
+    for ((j, vpred) <- featPred) {
+       gradient(j) -= (vpred);
+    }
+
+    // do L2 Regularization
+    //var l1norm = getL1Norm(currentWeight);
+    for (i2 <- 0 until currentWeight.length) {
+      //var regularizerNum: Double = Math.max(0, b);
+      //var regularizerDen: Double = Math.max(0, b);
+      var reg: Double = 1.0 - (eta * lambda)
+          var curWeightVal = currentWeight(i2) * reg;
+    currentWeight(i2) = curWeightVal + (gradient(i2) * eta);
+    //currentWeight(i2) += (gradient(i2) * eta);
+    }
+  }
+
+  
+  def greedySearchQuickTest(testExs: ArrayBuffer[AceJointTaskExample], w: Array[Double], pruner: SearchDomainPruner) {
+    var sumTotal : Double = 0;
+    var sumErr: Double = 0
+    var sumErr1: Double = 0
+    var sumErr2: Double = 0
+    var sumErr3: Double = 0
+    
+    for (ex <- testExs) {
+      val predBestOutput = nerwikiTravialInference(ex, w, false); // my search prediction
+      val err = ex.getZeroOneError(predBestOutput);
+      val (err1, err2, err3) = ex.getZeroOneErrorEachTask(predBestOutput, 0);
+      val total = ex.totalSize;
+      sumErr += err;
+      sumTotal += total;
+      
+      sumErr1 += err1;
+      sumErr2 += err2;
+      sumErr3 += err3;
+    }
+    
+    //val errRate = sumErr / sumTotal;
+    val eachSum = sumTotal / 3;
+    val crct = sumTotal - sumErr;
+    val acc = crct / sumTotal;
+    println("Error each task = [" + sumErr1 + "," + sumErr2 + "," + sumErr3 +  "] / " + eachSum );
+    println("quick test: 01-Acc = " + crct + "/" + sumTotal + " = " + acc);
+    //println("quick test: 01-Err0r = " + sumErr + "/" + sumTotal + " = " + errRate);
+  }
+  
+
+  def unaryScoreChecking(allTrains: ArrayBuffer[AceJointTaskExample], 
+		  featIndexer: Indexer[String],
+		  testExs: ArrayBuffer[AceJointTaskExample],
+		  unaryPruner: SearchDomainPruner)  {
+
+	  val asGold = false;
+	  val applyPrune = true;
+
+	  for (ex <- testExs) {
+      
+      val allValues = new ArrayBuffer[GlobalDomainElement]();
+      
+		  // get value indices
+		  for (i <- ex.nerOutputArrStart until ex.nerOutputArrEnd) {
+			  val ivariable = ex.getVariableGivenIndex(i);
+			  val indices = if (asGold) {
+				  if (applyPrune) { 
+					  ivariable.getCorrectNonPruningValueIndices();
+				  } else {
+					  ivariable.getCorrectValueIndices();
+				  }
+			  } else {
+				  if (applyPrune) { 
+					  ivariable.getAllNonPruningValueIndices();
+				  } else {
+					  ivariable.getAllValueIndices();
+				  }
+			  }
+
+			  val valueElements = new ArrayBuffer[DomainElement]();
+
+			  var scaledSum: Double = 0;
+			  val scaledScores = new ArrayBuffer[Double]();
+			  for (vIdx <- indices) {
+				  val actualScore = ivariable.values(vIdx).unaryScore;
+				  //val scaledWeight = exp(actualScore / epsilon);
+				  //scaledSum += scaledWeight;
+				  val ve = new DomainElement(vIdx, actualScore);
+				  valueElements += ve;
+			  }
+
+			  // sort!
+			  val sortv = (valueElements.toSeq.sortWith(_.rankingWeight > _.rankingWeight)).toArray;
+
+
+			  for (j <- 0 until sortv.length) {
+				  val idx = sortv(j).vIndex;
+          val lastj = if (j == 0) 0 else (j - 1);
+          val lastidx = sortv(lastj).vIndex;
+				  val diff = sortv(lastj).rankingWeight - sortv(j).rankingWeight;
+          var change = 0;
+          if (ivariable.values(idx).isCorrect == ivariable.values(lastidx).isCorrect) {
+            change = 0;
+          } else if ((ivariable.values(idx).isCorrect == true) && (ivariable.values(lastidx).isCorrect == false)) {
+            change = 1;
+          } else if ((ivariable.values(idx).isCorrect == false) && (ivariable.values(lastidx).isCorrect == true)) {
+            change = -1;
+          }
+				  val gme = new GlobalDomainElement(i, idx, change, ivariable.values(idx).isCorrect, diff);
+				  allValues += gme;
+			  }
+
+
+		  }
+
+
+		  var accu = 0;
+		  val sortGme = (allValues.toSeq.sortWith(_.rankingWeight < _.rankingWeight)).toArray;
+      var allZero = 0;
+
+		  for (ii <- 0 until sortGme.size) {
+			  if (sortGme(ii).rankingWeight == 0) {
+				  if (sortGme(ii).isCorrect) {
+					  //accu += 1;
+				  }
+          allZero += 1;
+			  }
+		  }
+
+      //println("zeros = " + allZero);
+		  //println("Start= " + accu);
+      var maxAccu = -100000;
+		  for (ii <- 0 until sortGme.size) {
+			  //if (sortGme(ii).rankingWeight > 0) {
+				  accu += sortGme(ii).change;
+				  //println(ii + "," + accu + "," + sortGme(ii).change);
+          if (accu > maxAccu) {
+            maxAccu = accu;
+          }
+			  //}
+        //println(ii + "," + accu);
+		  }
+      println("zeros " + allZero + " Total " + ex.numMentions + " Start " + accu + " Max " + maxAccu);
+	  }
+
+
+
+  }
+  
+}

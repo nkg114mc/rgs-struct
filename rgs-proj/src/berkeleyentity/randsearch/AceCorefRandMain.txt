@@ -1,0 +1,507 @@
+package berkeleyentity.randsearch;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Random;
+
+import berkeleyentity.MyTimeCounter;
+import edu.illinois.cs.cogcomp.sl.core.SLModel;
+import edu.illinois.cs.cogcomp.sl.core.SLParameters;
+import edu.illinois.cs.cogcomp.sl.core.SLProblem;
+import edu.illinois.cs.cogcomp.sl.learner.Learner;
+import edu.illinois.cs.cogcomp.sl.learner.LearnerFactory;
+import edu.illinois.cs.cogcomp.sl.util.WeightVector;
+import elearning.ElearningArg;
+import experiment.CostFuncCacherAndLoader;
+import experiment.ExperimentResult;
+import experiment.RndLocalSearchExperiment.InitType;
+import experiment.RndLocalSearchExperiment.MulLbLossType;
+import experiment.TestingAcc;
+import general.AbstractActionGenerator;
+import general.AbstractLossFunction;
+import general.FactorGraphBuilder.FactorGraphType;
+/*
+import ims.hotcoref.ConllScore;
+import ims.hotcoref.ConllScoring;
+import ims.hotcoref.Options;
+*/
+import ims.hotcoref.oregonstate.HotCorefDocInstance;
+import ims.hotcoref.oregonstate.HotCorefFeaturizer;
+import ims.hotcoref.oregonstate.MyLatentLearner;
+import init.RandomStateGenerator;
+import search.GreedySearcher;
+import search.SearchResult;
+import search.ZobristKeys;
+import search.loss.SearchLossExmpAcc;
+import search.loss.SearchLossExmpF1;
+import search.loss.SearchLossHamming;
+import sequence.hw.HwOutput;
+
+public class AceCorefRandMain {
+	
+	///////////////////////
+	
+	public static void main(String[] args) {
+		
+		ElearningArg eLnArg = new ElearningArg();
+		eLnArg.useFeat2 = true;
+		
+		
+		// load data
+		Ace05DataSet ace05Ds = Ace05DataSet.loadFromScratch();
+		String dsName = ace05Ds.name;
+		
+		CostFuncCacherAndLoader costchr = new CostFuncCacherAndLoader(CostFuncCacherAndLoader.defaultFolder);
+		
+		try {
+			runLearning(ace05Ds, InitType.UNIFORM_INIT, MulLbLossType.HAMMING_LOSS, 1, -2,
+					    "../sl-config/"+dsName+"-search-DCD.config", 
+					    "../logistic_models/"+dsName+".logistic", 
+					    "../logistic_models/"+dsName+".ssvm",
+					    eLnArg, costchr);
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		
+		System.out.println("All Done!");
+	}
+	
+	public static void runLearning(Ace05DataSet ace05Ds, InitType initType, MulLbLossType lossTyp,  int randomNum, double iniAlfa,
+			                      String svmCfgFile, String modelLogisticFn, String modelSvmFn, 
+			                      ElearningArg evalLearnArg, CostFuncCacherAndLoader costCacher) throws Exception {
+
+		String dsName = ace05Ds.name;
+		String configPath = svmCfgFile;
+		int nrnd = randomNum;
+		
+		// load data
+		List<AceCorefInstance> trInsts = ace05Ds.getTrainInstances();
+		System.out.println("Train docs = " + trInsts.size());
+		
+		
+		RandomStateGenerator initStateGener = null;
+		RandomStateGenerator initStateGenerGold = null;
+		System.out.println("InitType = " + initType.toString());
+		if (initType == InitType.UNIFORM_INIT) {
+			initStateGener = new AceCorefUniformRndGenerator(new Random(), false);
+			initStateGenerGold = new AceCorefUniformRndGenerator(new Random(), true);
+		} else if (initType == InitType.LOGISTIC_INIT) {
+			//initStateGener = MultiLabelSamplingRndGenerator.loadGenrIfExist(modelLogisticFn, dsName, trtstInsts.get(0), trtstInsts.get(1), Label.MULTI_LABEL_DOMAIN, false);
+		}
+		System.out.println("=======");
+		
+		AbstractActionGenerator actGener = new AceCorefActionGenerator(false);
+		AbstractActionGenerator goldGener = new AceCorefActionGenerator(true);
+		AbstractLossFunction searchLossFunc = buildLossFunction(lossTyp);
+
+		//////////////////////////////////////////////////////////////////////
+		// train
+		SLModel model = new SLModel();
+		SLProblem spTrain = Ace05DataSet.ExampleListToSLProblem(trInsts);///slproblems.get(0);
+
+		// initialize the inference solver
+		ZobristKeys abkeys = new ZobristKeys(700, 700);
+		AceCorefFeaturizer fg = new AceCorefFeaturizer(ace05Ds.getMentionPairFeaturizer(), true);
+
+		//featurizeAll(trInsts, fg);
+		
+		GreedySearcher searcher = new GreedySearcher(FactorGraphType.Ace05CorefGraph, fg, nrnd, actGener, initStateGener, searchLossFunc, abkeys);
+		GreedySearcher gdScher = new GreedySearcher(FactorGraphType.Ace05CorefGraph, fg, nrnd, goldGener, initStateGenerGold, searchLossFunc, abkeys);
+		//AceCorefInferencer corefInfr = new AceCorefInferencer(searcher, gdScher);
+		AceCorefInferencerEdgeOnly corefInfr = new AceCorefInferencerEdgeOnly(searcher, gdScher);
+		model.infSolver = corefInfr;
+		model.featureGenerator = fg;
+
+		SLParameters para = new SLParameters();
+		para.loadConfigFile(configPath);
+		para.TOTAL_NUMBER_FEATURE = fg.getFeatLen();
+		Learner baseLearner = LearnerFactory.getLearner(model.infSolver, fg, para);
+		
+
+		//////// latent_learner
+		SLParameters latentParam = new SLParameters();
+		latentParam.loadConfigFile(configPath);
+		latentParam.TOTAL_NUMBER_FEATURE = fg.getFeatLen();
+		latentParam.MAX_NUM_ITER = 10;
+		MyLatentLearner latentLearner = new MyLatentLearner(baseLearner, fg, latentParam, corefInfr);
+		
+
+		WeightVector initwv = new WeightVector(para.TOTAL_NUMBER_FEATURE);
+		model.wv = initwv;
+		System.err.println("weightLength1 = " + initwv.getLength() + " " + para.TOTAL_NUMBER_FEATURE);
+
+		MyTimeCounter trnTimer = new MyTimeCounter("ace05-train");
+		trnTimer.start();
+		
+		//model.wv = MyLatentPerceptronLearner.trainPerceptron(trInsts, initwv.getLength(), corefInfr, fg);
+		/*
+		if (CostFuncCacherAndLoader.cacheCostWeight) {
+			WeightVector loadedWv = costCacher.loadCachedWeight(dsName, initType, randomNum, CostFuncCacherAndLoader.getFeatDim(true, true, true),lossTyp, para.C_FOR_STRUCTURE);
+			if (loadedWv != null) { // load failure...
+				model.wv = loadedWv;
+			} else {
+				model.wv = latentLearner.train(spTrain, initwv);
+				costCacher.saveCachedWeight(model.wv, dsName, initType, randomNum, CostFuncCacherAndLoader.getFeatDim(true, true, true),lossTyp, para.C_FOR_STRUCTURE); // save
+			}
+		} else {
+			model.wv = latentLearner.train(spTrain, initwv);
+		}*/
+		if (CostFuncCacherAndLoader.cacheCostWeight) {
+			WeightVector loadedWv = costCacher.loadCachedWeight(dsName, initType, randomNum, CostFuncCacherAndLoader.getFeatDim(true, true, true), lossTyp, para.C_FOR_STRUCTURE, iniAlfa);
+			if (loadedWv != null) { // load failure...
+				model.wv = loadedWv;
+			} else {
+				model.wv = latentLearner.train(spTrain, initwv);
+				costCacher.saveCachedWeight(model.wv, dsName, initType, randomNum, CostFuncCacherAndLoader.getFeatDim(true, true, true), lossTyp, para.C_FOR_STRUCTURE, iniAlfa); // save
+			}
+		} else {
+			model.wv = latentLearner.train(spTrain, initwv);
+		}
+		
+		model.config = new HashMap<String, String>();
+		System.out.println("Done training...");
+		trnTimer.end();
+		System.out.println("time (sec): " + trnTimer.getSeconds());
+		
+		// test
+		//////////////////////////////////
+		ace05Ds.clearTrainInstances();
+		System.out.println("Start testing...");
+		evaluate(ace05Ds, model, searchLossFunc);
+		
+		
+/*		
+		//evaluate(ds.name + "-test", ds.getTestExamples(), model, searchLossFunc);
+		averageOfMultiRunEvaluationMl(ds, model, searchLossFunc, evalLearnArg.multiRunTesting);
+		
+		// about local optimal?
+		SamplingELearning.exploreLocalOptimal(initStateGener, trtstInsts.get(1), model.wv, searcher, 20, null);
+		
+		////////////////////////////////////////////////////////////////////
+		////////////////////////////////////////////////////////////////////
+		////////////////////////////////////////////////////////////////////
+		
+		EInferencer einfr = null; // default setting is no evaluation learning
+
+		if (evalLearnArg.runEvalLearn) {
+			
+			MultiLabelFeaturizer efzr = new MultiLabelFeaturizer(ds.getLabelDimension(), ds.getFeatureDimension(), evalLearnArg.useFeat2, evalLearnArg.useFeat3, evalLearnArg.useFeat4);//true, true, true);
+			boolean useInstWght = evalLearnArg.considerInstWght;
+			int eIter = evalLearnArg.elearningIter;
+			
+			//AbstractRegressionLearner regser = new LinearRegressionLearner(dsName);
+			//AbstractRegressionLearner regser = new SGDRegressionLearner(dsName);
+			AbstractRegressionLearner regser = new XgbRegressionLearner(dsName);
+
+			einfr = EFunctionLearning.learnEFunction(initStateGener, trtstInsts.get(0), 
+				  efzr,
+				  FactorGraphType.MultiLabelGraph,
+	              abkeys,
+
+	              model.wv, 
+	              searcher, 
+	      
+	              regser,
+	              eIter,
+	              useInstWght,
+	              
+	              trtstInsts.get(1));
+		}
+		
+		/////////////////////////////////////////////////////////////////////
+		// Test the e_weight //
+		/////////////////////////////////////////////////////////////////////
+		
+		if (evalLearnArg.doEvalTest) {
+			EFunctionLearning.testEvaluationSpeedupSeqLabeling(trtstInsts.get(1), 
+					model.wv, 
+	                searcher,
+	                null,
+	                evalLearnArg.restartNumTest,
+	                dsName);
+			EFunctionLearning.testEvaluationSpeedupSeqLabeling(trtstInsts.get(1), 
+					model.wv, 
+	                searcher,
+	                einfr,
+	                evalLearnArg.restartNumTest,
+	                dsName);
+		}
+*/
+	}
+	
+	public static void featurizeAll(List<HotCorefDocInstance> insts, HotCorefFeaturizer fg) {
+		fg.openIndexer();
+		
+		int total = 0;
+		for (HotCorefDocInstance ins : insts) {
+			total += ins.size();
+		}
+		System.out.println("Total pred ments = " + total);
+		
+		
+		int totalEdge = 0;
+		for (HotCorefDocInstance ins : insts) {
+			for (int i = 1; i < ins.size(); ++i) {
+				//for (int j = 0; j < i; j++) {
+				//	Edge edge = 
+				//}
+				//totalEdge += ins.getDomainGivenIndex(i).length;
+			}
+		}
+		System.out.println("Total edges = " + totalEdge);
+		fg.closeIndexer();
+	}
+
+	
+	public static AbstractLossFunction buildLossFunction(MulLbLossType lossTyp) {
+		if (lossTyp == MulLbLossType.HAMMING_LOSS) {
+			return (new SearchLossHamming());
+		} else if (lossTyp == MulLbLossType.EXMPF1_LOSS) {
+			return (new SearchLossExmpF1());
+		} else if (lossTyp == MulLbLossType.EXMPACC_LOSS) {
+			return (new SearchLossExmpAcc());
+		}
+		return null;
+	}
+	/*
+	public static ExperimentResult averageOfMultiRunEvaluationMl(Dataset ds, SLModel model, AbstractLossFunction searchLossFunc, int timeToRun) {
+		try {
+			
+			assert (timeToRun > 0);
+			
+			ArrayList<ExperimentResult> allRes = new ArrayList<ExperimentResult>();
+			ArrayList<OneTestingResult> allAccs = new ArrayList<OneTestingResult>();
+			for (int i = 0; i < timeToRun; i++) {
+				System.out.println("==>Testing run " + i + "<==");
+				ExperimentResult re = evaluate(ds.name + "-test", ds.getTestExamples(), model, searchLossFunc);
+				allRes.add(re);
+				allAccs.add(re.testAcc);
+			}
+			
+			// do average
+			OneTestingResult.computeAverage(allAccs);
+			
+			
+			
+			return allRes.get(0);
+			
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		
+		return null;// should not reach here
+	}
+	*/
+	public static ExperimentResult evaluate(Ace05DataSet ace05Ds, SLModel model, AbstractLossFunction searchLossFunc) throws Exception {
+		
+		double total = 0;
+		double instCnt = 0;
+		double acc = 0;
+		double accumAcc = 0;
+		double avgTruAcc = 0;
+		
+		AceCorefInferencer searchInfr = (AceCorefInferencer)(model.infSolver);
+		//AceCorefInferencerEdgeOnly searchInfr = (AceCorefInferencerEdgeOnly)(model.infSolver);
+		
+		List<AceCorefInstance> tstInsts = ace05Ds.getTestInstances();
+		
+		for (AceCorefInstance tstInst : tstInsts) {
+
+			HwOutput gold = (HwOutput) searchInfr.getRndPerfect(tstInst);
+			HwOutput goldLatent = (HwOutput) searchInfr.getBestLatentStructure(model.wv, tstInst, gold);
+
+			SearchResult infrRe = searchInfr.runSearchInference(model.wv, null, tstInst, null);
+			HwOutput prediction = (HwOutput)(infrRe.predState.structOutput);
+			
+			tstInst.predictOutput = prediction;//goldLatent;
+		}
+
+		/*
+		for (int i = 0; i < tstExs.size(); i++) {
+			instCnt++;
+			Example ex = tstExs.get(i);
+			HwInstance ins = DatasetReader.exampleToInstance(ex);
+			StructOutput gold = ex.getGroundTruthOutput();
+			HwOutput golds = new HwOutput(gold.size(), Label.MULTI_LABEL_DOMAIN);
+			//HwOutput prediction = (HwOutput) model.infSolver.getBestStructure(model.wv, ins);
+			
+			
+			StructOutput predStruct = new StructOutput(prediction.size());
+			predStruct.setAll(prediction.output);
+			ex.predictOutput = predStruct;
+			
+			
+			double predAcc = searchLossFunc.computeZeroOneAcc(ins, golds,  prediction).getVal();
+			
+			/////////////////////////////////
+			
+			for (int j = 0; j < prediction.output.length; j++) {
+				total += 1.0;
+				if (prediction.output[j] == golds.output[j]){
+					acc += 1.0;
+				}
+			}
+			// sum true Acc
+			avgTruAcc += infrRe.accuarcy;
+			// sum pred Acc
+			accumAcc += predAcc;
+		}
+		
+		
+		///////////////////////////////////////
+		///////////////////////////////////////
+		System.out.println("LossName = " + searchLossFunc.getClass().getSimpleName());
+		if (searchLossFunc.getClass().getSimpleName().equals("SearchLossHamming")) {
+			avgTruAcc = avgTruAcc / total;
+			accumAcc = accumAcc / total;
+		} else {
+			avgTruAcc = avgTruAcc / instCnt;
+			accumAcc = accumAcc / instCnt;
+		}
+		
+		
+		double accuracyHamm = acc / total;
+		System.out.println("Accuracy = " + acc + " / " + total + " = " + accuracyHamm);
+		
+		double genAcc = avgTruAcc;
+		double selAcc = genAcc - accumAcc;
+		
+		if (genAcc < accumAcc) {
+			throw new RuntimeException("[ERROR]Generation accuracy is less than final output accuracy: " + genAcc + " < " + accumAcc);
+		}
+		
+		System.out.println("Overall Acc = " + accumAcc);
+		System.out.println("Generation Acc = " + genAcc);
+		System.out.println("Selection AccDown = " + selAcc);
+		System.out.println("//////////////////////////////////////");
+		System.out.println();
+		*/
+		
+		// run v7 script
+		scoringCorefBerk(tstInsts);
+		
+		List<TestingAcc> corefScores = new ArrayList<TestingAcc>();//scoringCoref(conllDs.options);
+		
+		
+		ExperimentResult expRes = new ExperimentResult();
+		expRes.addAccBatch(corefScores);
+		//expRes.addAcc(new TestingAcc("OverallAcc",  accumAcc));
+		//expRes.addAcc(new TestingAcc("GenerationAcc", genAcc));
+
+		return expRes;
+	}
+	/*
+	public static List<TestingAcc> scoringCoref(Options opt) {
+		List<ConllScore> scs = ConllScoring.runScorer((opt.goldtest), (opt.outtest));
+		ArrayList<TestingAcc> accs = new ArrayList<TestingAcc>();
+		for (ConllScore sc : scs) {
+			accs.add(new TestingAcc(sc.name, sc.f1));
+		}
+		return accs;
+	}
+	*/
+	public static List<TestingAcc> scoringCorefBerk(List<AceCorefInstance> tstInsts) {
+		Ace05CorefInterf.scoringCorefInstances(tstInsts);
+		
+		//List<ConllScore> scs = ConllScoring.runScorer((opt.goldtest), (opt.outtest));
+		ArrayList<TestingAcc> accs = new ArrayList<TestingAcc>();
+		//for (ConllScore sc : scs) {
+		//	accs.add(new TestingAcc(sc.name, sc.f1));
+		//}
+		return accs;
+	}
+	
+	
+	/*
+	public static void runCompleteTrainingPreprocess(Dataset ds, Param pargs) { 
+		
+		MultiLabelEvaluator evaluator = new MultiLabelEvaluator();
+		
+		////
+		//// DIMENSION REDUCTION
+		////
+		
+		CsspReducer reducer = null;
+		if (pargs.doDR) {
+			String[] rdPaths = CsspModel.getDefaultModelPath(pargs.mlcPath, ds.name, pargs.drtopK);
+			String vPath = rdPaths[0];
+			String pPath = rdPaths[1];
+			
+			reducer = new CsspReducer(vPath, pPath);
+			CsspReducer.doDimensionReduction(ds.getTrainExamples(), reducer);
+			CsspReducer.doDimensionReduction(ds.getTestExamples(), reducer);
+		}
+
+		////
+		//// PRUNER LEARNING
+		////
+		
+		////
+		//// PRUNING
+		////
+		
+		if (pargs.doPruning) {
+			// pruner training
+			LabelPruner pruner = null;
+			if (pargs.doPrunLearning) {
+				pruner = LambdaMartLabelPruner.trainPrunerRanklib(ds, pargs.pruneTopK, "R");
+			} else {
+				pruner = new LambdaMartLabelPruner(pargs.prunerMdlPath, pargs.pruneTopK);
+			}
+			
+			//PruningEvaluator.evaluatePruner(ds.getTestExamples(), pruner);
+			
+			// do pruning
+			LabelPruner.pruneExamples(ds.getTrainExamples(), pruner);
+			LabelPruner.pruneExamples(ds.getTestExamples(), pruner);
+		}
+		
+		////////////////////////////////////////
+		// Test upper bound before search
+		////////////////////////////////////////
+
+		////
+		//// HEURISTIC LEARNING
+		////
+		CostFunction heurFunc = null;
+		if (pargs.doHeurLearning) {
+			int hIteration = 0;
+			ArrayList<CostFunction> allHeuristics = null;
+			try {
+				allHeuristics = BreathFirstSearcher.heuristicDaggerIterations(ds.getTrainExamples(), ds.getTestExamples(), pargs.beamSize, pargs.maxDepth, ds.name, hIteration);
+			} catch (FileNotFoundException e) {
+				e.printStackTrace();
+			}
+			heurFunc = allHeuristics.get(0);
+		} else {
+			heurFunc = new RankingCostFunction(new Featurizer());
+			heurFunc.loadModel(pargs.heurMdlPath);
+		}
+		// test generation loss
+		HeuristicLearning.testGenerationLoss(ds, pargs.beamSize, pargs.maxDepth, heurFunc);
+
+		////
+		//// COST LEARNING
+		////
+		// TODO
+		CostLearning.costLearning(ds, ds.getTrainExamples(), ds.getTestExamples(), pargs.beamSize, pargs.maxDepth, heurFunc);
+
+		
+		////
+		//// DIMENSION REDUCTION RECONSTRUCT
+		////
+		if (pargs.doDR) {
+			//LabelDimensionReducer.doDrReconstruct(ds.getTrainExamples(), reducer);
+			LabelDimensionReducer.doDrReconstruct(ds.getTestExamples(), reducer);
+		}
+		
+		////
+		//// EVALUATION
+		////
+		
+		// scoring!
+		evaluator.evaluationDataSet(ds.name, ds.getTestExamples());
+	}*/
+	
+}
